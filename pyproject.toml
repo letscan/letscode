@@ -1,0 +1,13 @@
+[project]
+name = "letscode"
+version = "0.1.0"
+description = "Lightweight Python agent harness compatible with letscode"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.27.0",
+    "openai>=1.0",
+]
+
+[project.scripts]
+letscode = "letscode.cli:main"
