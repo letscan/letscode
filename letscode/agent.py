@@ -3,17 +3,36 @@
 import json
 import subprocess
 import sys
+import time
 from typing import Any
 
 from openai import OpenAI
 
 from .config import ModelConfig
+from .events import EventEmitter
 from .prompt import build_system_prompt
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .tools.agent import SCHEMA as AGENT_SCHEMA
 
 # Built-in tool definitions including Agent
 BUILTIN_TOOL_DEFINITIONS = TOOL_DEFINITIONS + [AGENT_SCHEMA]
+
+# Track files read in the current session for edit validation
+_read_files: set[str] = set()
+
+
+def _mark_file_read(file_path: str) -> None:
+    """Record that a file has been read in this session."""
+    from pathlib import Path
+    resolved = str(Path(file_path).expanduser().resolve())
+    _read_files.add(resolved)
+
+
+def _check_file_read(file_path: str) -> bool:
+    """Check whether a file has been read in this session."""
+    from pathlib import Path
+    resolved = str(Path(file_path).expanduser().resolve())
+    return resolved in _read_files
 
 
 def _stream_response(
@@ -23,10 +42,12 @@ def _stream_response(
     max_tokens: int,
     tools: list[dict] | None = None,
     output: Any = None,
+    emitter: EventEmitter | None = None,
 ) -> tuple[str, list[dict]]:
     """Make a streaming API call. Returns (text_content, tool_calls).
 
     output: file-like object to write text to. Defaults to sys.stdout.
+    emitter: optional event emitter for agent_message events.
     """
     if output is None:
         output = sys.stdout
@@ -55,8 +76,11 @@ def _stream_response(
             line_buf += delta.content
             while "\n" in line_buf:
                 line, line_buf = line_buf.split("\n", 1)
-                output.write(line + "\n")
-                output.flush()
+                if emitter:
+                    emitter.emit_agent_message_chunk(line)
+                if not (emitter and emitter.to_stdout):
+                    output.write(line + "\n")
+                    output.flush()
 
         # Accumulate tool call fragments
         if delta.tool_calls:
@@ -74,8 +98,11 @@ def _stream_response(
 
     # Flush remaining buffered text
     if line_buf:
-        output.write(line_buf)
-        output.flush()
+        if emitter:
+            emitter.emit_agent_message_chunk(line_buf)
+        if not (emitter and emitter.to_stdout):
+            output.write(line_buf)
+            output.flush()
 
     tool_calls = [tc_accum[i] for i in sorted(tc_accum.keys())]
     return text_content, tool_calls
@@ -128,13 +155,19 @@ def _run_subagent(
     prompt: str,
     config_path: str | None = None,
     verbose: bool = False,
+    preset: str | None = None,
+    no_sandbox: bool = False,
 ) -> str:
     """Run a sub-agent by spawning letscode as a subprocess."""
-    cmd = [sys.executable, "-m", "letscode", "--max-turns", "30"]
+    cmd = [sys.executable, "-m", "letscode", "--max-turns", "30", "--no-mcp"]
     if config_path:
         cmd.extend(["--config", config_path])
     if verbose:
         cmd.append("--verbose")
+    if preset:
+        cmd.extend(["--preset", preset])
+    if no_sandbox:
+        cmd.append("--no-sandbox")
     cmd.append(prompt)
 
     try:
@@ -157,6 +190,14 @@ def _run_subagent(
         return f"<error>Sub-agent failed: {e}</error>"
 
 
+def _stop_reason(reached_max: bool, error: bool) -> str:
+    if error:
+        return "error"
+    if reached_max:
+        return "max_turn_requests"
+    return "end_turn"
+
+
 async def run_agent(
     prompt: str,
     config: ModelConfig,
@@ -164,6 +205,8 @@ async def run_agent(
     max_turns: int | None = None,
     verbose: bool = False,
     mcp: Any | None = None,
+    emitter: EventEmitter | None = None,
+    feed_path: str | None = None,
 ) -> str:
     """Run the agent loop until the LLM stops making tool calls."""
     client = OpenAI(
@@ -175,33 +218,67 @@ async def run_agent(
     mcp_tools = mcp.get_tool_definitions() if mcp else []
     all_tools = BUILTIN_TOOL_DEFINITIONS + mcp_tools
 
+    # Build system prompt
+    import os
+    cwd = os.getcwd()
     system_prompt = build_system_prompt(config.model)
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
-    ]
+
+    # Set security state for tools
+    from .rules import load_rules, merge_rules
+    from .tools._types import set_security
+    user_rules = load_rules(config.rules)
+    rules = merge_rules(config.preset, user_rules)
+    set_security(config.preset, config.sandbox, rules)
+
+    # Load feed history or start fresh
+    if feed_path:
+        from .feed import load_feed
+        feed_model, history = load_feed(feed_path)
+        model_for_prompt = feed_model or config.model
+        system_prompt = build_system_prompt(model_for_prompt)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+        ] + history + [
+            {"role": "user", "content": prompt},
+        ]
+    else:
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+    # Emit session/prompt
+    if emitter:
+        emitter.emit_session_prompt(config.model, cwd, prompt)
 
     turn = 0
+    had_error = False
+
     while True:
         if max_turns is not None and turn >= max_turns:
             print(f"\n[Reached max turns limit: {max_turns}]", file=sys.stderr)
             break
 
         turn += 1
+        if emitter:
+            emitter._turns = turn
 
         try:
             text_content, tool_calls = _stream_response(
                 client, config.model, messages, config.max_tokens,
-                tools=all_tools,
+                tools=all_tools, emitter=emitter,
             )
         except Exception as e:
             print(f"\nAPI error: {e}", file=sys.stderr)
+            if emitter:
+                emitter.emit_error(str(e), code="api_error", recoverable=False)
+            had_error = True
             break
 
         if not tool_calls:
             break
 
-        if text_content:
+        if text_content and not emitter:
             sys.stdout.write("\n")
 
         assistant_msg: dict[str, Any] = {
@@ -232,32 +309,87 @@ async def run_agent(
             except json.JSONDecodeError:
                 args = {}
 
-            # Event 1: tool-call
+            # Event: tool_call (pending)
+            if emitter:
+                emitter.emit_tool_call(tool_id, tool_name, args)
+
             if verbose:
                 from .tools import _call_summary
                 print(_call_summary(tool_name, args), file=sys.stderr)
 
+            # Event: tool_call_update (in_progress)
+            t0 = time.monotonic()
+            if emitter:
+                emitter.emit_tool_update(tool_id, "in_progress")
+
             # Dispatch: Agent / MCP / built-in
             if tool_name == "Agent":
                 sub_prompt = args.get("prompt", "")
-                result = _run_subagent(sub_prompt, config_path=config_path, verbose=verbose)
+                result = _run_subagent(
+                    sub_prompt, config_path=config_path, verbose=verbose,
+                    preset=config.preset, no_sandbox=not config.sandbox,
+                )
             elif tool_name.startswith("mcp__") and mcp is not None:
                 result = await mcp.call_tool(tool_name, args)
+            elif tool_name == "Edit":
+                # Enforce read-before-edit
+                fp = args.get("file_path", "")
+                if fp and not _check_file_read(fp):
+                    result = (
+                        f"<error>You must read {fp} with the Read tool before editing it. "
+                        "Read the file first, then retry the edit.</error>"
+                    )
+                else:
+                    result, _ = execute_tool(tool_name, tool_args)
             else:
                 result, _ = execute_tool(tool_name, tool_args)
 
-            # Event 2: tool-result
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+            # Track reads for edit validation
+            if tool_name == "Read":
+                fp = args.get("file_path", "")
+                if fp and not result.startswith("<error>"):
+                    _mark_file_read(fp)
+
+            # Event: tool_call_update (completed/failed)
             result_summary = _result_summary(tool_name, result)
             if verbose:
                 print(f"  <- {tool_name}: {result_summary}", file=sys.stderr)
 
+            if emitter:
+                tc_status = "failed" if result.startswith("<error>") else "completed"
+                tc_content = result_summary
+                emitter.emit_tool_update(tool_id, tc_status, tc_content, result=result, duration_ms=elapsed_ms)
+
             if len(result) > 50000:
                 result = result[:50000] + f"\n... (truncated, {len(result)} chars total)"
 
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": result,
-            })
+            if tool_name == "Skill" and not result.startswith("<error>"):
+                # Inline skill: tool_result is a short confirmation,
+                # actual content is injected as a user message
+                skill_name = args.get("skill", "")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": f"Launching skill: {skill_name}",
+                })
+                messages.append({
+                    "role": "user",
+                    "content": result,
+                })
+            else:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": result,
+                })
+
+    # Emit session end
+    if emitter:
+        emitter.emit_session_result(_stop_reason(
+            reached_max=(max_turns is not None and turn >= max_turns),
+            error=had_error,
+        ))
 
     return ""

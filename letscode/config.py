@@ -11,6 +11,9 @@ class ModelConfig:
     api_key: str | None = None
     base_url: str = "https://api.openai.com/v1"
     max_tokens: int = 16384
+    preset: str = "default"
+    sandbox: bool = True
+    rules: dict | None = None
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -37,6 +40,9 @@ def load_config(
     models: list[dict] = []
     default_model: str | None = None
     mcp_servers: dict[str, McpServerConfig] = {}
+    sandbox_preset: str = "default"
+    sandbox: bool = True
+    rules: dict | None = None
 
     if config_path:
         with open(config_path) as f:
@@ -44,6 +50,9 @@ def load_config(
         models = data.get("models", [])
         default_model = data.get("default_model")
         mcp_servers = data.get("mcp_servers", {})
+        sandbox_preset = data.get("preset", "default")
+        sandbox = data.get("sandbox", True)
+        rules = data.get("rules")
 
     target = model_id or default_model
 
@@ -64,9 +73,12 @@ def load_config(
             api_key=entry.get("api_key"),
             base_url=entry.get("base_url", "https://api.openai.com/v1"),
             max_tokens=max_tokens,
+            preset=sandbox_preset,
+            sandbox=sandbox,
+            rules=rules,
         )
     elif target:
-        cfg = ModelConfig(model=target)
+        cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)
     else:
         raise SystemExit(
             "No model specified. Use --model or set default_model in config file."
