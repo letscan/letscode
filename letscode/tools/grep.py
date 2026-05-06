@@ -1,14 +1,10 @@
-"""Grep tool — content search with regex."""
+"""Grep tool — content search with regex, backed by rg or system grep."""
 
-import glob as glob_mod
-import os
-import re
 import shutil
 import subprocess
-from pathlib import Path
 from typing import Any
 
-from ._types import get_cwd
+from ._types import get_cwd, check_read_allowed
 
 SCHEMA = {
     "type": "function",
@@ -122,17 +118,35 @@ def execute(args: dict[str, Any]) -> str:
     offset = args.get("offset", 0)
     multiline = args.get("multiline", False)
 
+    if err := check_read_allowed(search_path):
+        return err
+
     if shutil.which("rg") is not None:
         return _search_rg(
             pattern, search_path, glob_filter, output_mode,
             context_before, context_after, case_insensitive,
             file_type, head_limit, offset, multiline,
         )
-    return _search_python(
+    return _search_grep(
         pattern, search_path, glob_filter, output_mode,
         context_before, context_after, case_insensitive,
         file_type, head_limit, offset, multiline,
     )
+
+
+def _filter_denied(lines: list[str]) -> list[str]:
+    """Remove lines from files that are denied by read rules."""
+    from ._types import check_read_allowed
+    allowed_cache: dict[str, bool] = {}
+    result = []
+    for line in lines:
+        # Extract file path: first colon-separated field (rg/grep output)
+        file_path = line.split(":")[0] if ":" in line else line
+        if file_path not in allowed_cache:
+            allowed_cache[file_path] = check_read_allowed(file_path) is None
+        if allowed_cache[file_path]:
+            result.append(line)
+    return result
 
 
 def _format_output(lines: list[str], output_mode: str, head_limit: int | None, offset: int | None) -> str:
@@ -169,6 +183,13 @@ def _format_output(lines: list[str], output_mode: str, head_limit: int | None, o
     return body
 
 
+def _build_type_glob(file_type: str | None) -> list[str]:
+    """Convert a type shorthand to a list of --include globs for grep."""
+    if not file_type or file_type not in _TYPE_MAP:
+        return []
+    return _TYPE_MAP[file_type]
+
+
 def _search_rg(
     pattern: str, search_path: str, glob_filter: str | None,
     output_mode: str, context_before: int | None, context_after: int | None,
@@ -202,6 +223,9 @@ def _search_rg(
         if not output:
             return "No matches found."
         lines = output.split("\n")
+        lines = _filter_denied(lines)
+        if not lines:
+            return "No matches found."
         return _format_output(lines, output_mode, head_limit, offset)
     except subprocess.TimeoutExpired:
         return "<error>Search timed out</error>"
@@ -209,77 +233,53 @@ def _search_rg(
         return f"<error>{e}</error>"
 
 
-def _search_python(
+def _search_grep(
     pattern: str, search_path: str, glob_filter: str | None,
     output_mode: str, context_before: int | None, context_after: int | None,
     case_insensitive: bool, file_type: str | None,
     head_limit: int | None, offset: int | None, multiline: bool,
 ) -> str:
-    flags = re.IGNORECASE if case_insensitive else 0
+    """Fallback using system grep when ripgrep is not available."""
+    if multiline:
+        return "<error>Multiline search requires ripgrep (rg). Please install ripgrep: https://github.com/BurntSushi/ripgrep</error>"
+
+    cmd = ["grep", "-E"]
+
+    if output_mode == "files_with_matches":
+        cmd.append("-rl")
+    elif output_mode == "count":
+        cmd.append("-rc")
+    else:
+        cmd.append("-n")
+    if case_insensitive:
+        cmd.append("-i")
+    if context_before:
+        cmd.extend(["-B", str(context_before)])
+    if context_after:
+        cmd.extend(["-A", str(context_after)])
+
+    # Type filtering via --include
+    type_globs = _build_type_glob(file_type)
+    for g in type_globs:
+        cmd.extend(["--include", g])
+    if glob_filter:
+        cmd.extend(["--include", glob_filter])
+
+    cmd.extend(["--color=never", pattern, "-r", search_path])
+
     try:
-        regex = re.compile(pattern, flags)
-    except re.error as e:
-        return f"<error>Invalid regex pattern: {e}</error>"
-
-    extensions = None
-    if file_type and file_type in _TYPE_MAP:
-        extensions = {ext.lstrip("*") for ext in _TYPE_MAP[file_type]}
-
-    base = Path(search_path).expanduser().resolve()
-    results: list[str] = []
-
-    for root, _dirs, files in os.walk(base):
-        _dirs[:] = [d for d in _dirs if not d.startswith(".")]
-        root_path = Path(root)
-
-        for fname in files:
-            fpath = root_path / fname
-
-            if glob_filter:
-                try:
-                    rel = str(fpath.relative_to(base))
-                except ValueError:
-                    rel = str(fpath)
-                if not glob_mod.fnmatch.fnmatch(rel, glob_filter):
-                    continue
-
-            if extensions and fpath.suffix not in extensions:
-                continue
-
-            try:
-                text = fpath.read_text(errors="ignore")
-            except (OSError, IOError):
-                continue
-
-            if output_mode == "files_with_matches":
-                if regex.search(text):
-                    try:
-                        results.append(str(fpath.relative_to(base)))
-                    except ValueError:
-                        results.append(str(fpath))
-            elif output_mode == "count":
-                count = len(regex.findall(text))
-                if count > 0:
-                    try:
-                        results.append(f"{fpath.relative_to(base)}:{count}")
-                    except ValueError:
-                        results.append(f"{fpath}:{count}")
-            else:
-                file_lines = text.split("\n")
-                for i, line in enumerate(file_lines):
-                    if regex.search(line):
-                        start = max(0, i - (context_before or 0))
-                        end = min(len(file_lines), i + 1 + (context_after or 0))
-                        for j in range(start, end):
-                            prefix = ">" if j == i else " "
-                            results.append(f"{fpath}:{j + 1}:{prefix}{file_lines[j]}")
-
-            if head_limit and len(results) >= head_limit:
-                break
-        if head_limit and len(results) >= head_limit:
-            break
-
-    if not results:
-        return "No matches found."
-
-    return _format_output(results, output_mode, head_limit, offset)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        output = result.stdout.strip()
+        if not output:
+            return "No matches found."
+        lines = output.split("\n")
+        lines = _filter_denied(lines)
+        if not lines:
+            return "No matches found."
+        return _format_output(lines, output_mode, head_limit, offset)
+    except subprocess.TimeoutExpired:
+        return "<error>Search timed out</error>"
+    except FileNotFoundError:
+        return "<error>Neither ripgrep (rg) nor grep found. Please install ripgrep: https://github.com/BurntSushi/ripgrep</error>"
+    except Exception as e:
+        return f"<error>{e}</error>"

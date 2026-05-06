@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any
 
+from ._types import check_read_allowed
+
 SCHEMA = {
     "type": "function",
     "function": {
@@ -52,7 +54,10 @@ def execute(args: dict[str, Any]) -> str:
     limit = args.get("limit")
 
     try:
-        p = Path(file_path).expanduser()
+        if err := check_read_allowed(file_path):
+            return err
+
+        p = Path(file_path).expanduser().resolve()
         if p.is_dir():
             return f"<error>{file_path} is a directory, not a file. Use ls via Bash to list directory contents.</error>"
         if not p.exists():

@@ -1,10 +1,11 @@
 """Bash tool — shell command execution."""
 
 import os
+import shutil
 import subprocess
 from typing import Any
 
-from ._types import get_cwd
+from ._types import get_cwd, get_preset, is_sandbox, check_cmd_allowed
 
 SCHEMA = {
     "type": "function",
@@ -36,7 +37,7 @@ SCHEMA = {
             " - Try to maintain your current working directory throughout the session by using "
             "absolute paths and avoiding usage of `cd`. You may use `cd` if the User explicitly "
             "requests it.\n"
-            " - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). "
+            " - You may specify an optional timeout in milliseconds (up to 1800000ms / 30 minutes). "
             "By default, your command will timeout after 120000ms (2 minutes).\n"
             " - When issuing multiple commands:\n"
             "  - If the commands are independent and can run in parallel, make multiple Bash "
@@ -62,7 +63,7 @@ SCHEMA = {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Optional timeout in milliseconds (max 600000)",
+                    "description": "Optional timeout in milliseconds (max 1800000)",
                 },
                 "description": {
                     "type": "string",
@@ -78,16 +79,27 @@ SCHEMA = {
 def execute(args: dict[str, Any]) -> str:
     command = args.get("command", "")
     timeout_ms = args.get("timeout")
-    timeout = (timeout_ms / 1000) if timeout_ms else 120
+    timeout = min(timeout_ms / 1000, 1800) if timeout_ms else 120
+
+    if err := check_cmd_allowed(command):
+        return err
 
     shell = os.environ.get("SHELL", "/bin/bash")
+    cwd = get_cwd()
+    cmd = [shell, "-c", command]
+
+    preset = get_preset()
+    if is_sandbox() and preset in ("safe", "default", "risk") and shutil.which("sandbox-exec"):
+        from ..sandbox import wrap_command
+        cmd = wrap_command(cmd, cwd, preset)
+
     try:
         result = subprocess.run(
-            [shell, "-c", command],
+            cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=get_cwd(),
+            cwd=cwd,
         )
         parts: list[str] = []
         if result.stdout:

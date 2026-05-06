@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any
 
+from ._types import check_write_allowed
+
 SCHEMA = {
     "type": "function",
     "function": {
@@ -60,7 +62,10 @@ def execute(args: dict[str, Any]) -> str:
     replace_all = args.get("replace_all", False)
 
     try:
-        p = Path(file_path).expanduser()
+        if err := check_write_allowed(file_path):
+            return err
+
+        p = Path(file_path).expanduser().resolve()
         if not p.exists():
             return f"<error>File not found: {file_path}</error>"
 

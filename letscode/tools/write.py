@@ -3,6 +3,8 @@
 from pathlib import Path
 from typing import Any
 
+from ._types import check_write_allowed
+
 SCHEMA = {
     "type": "function",
     "function": {
@@ -41,7 +43,10 @@ def execute(args: dict[str, Any]) -> str:
     content = args.get("content", "")
 
     try:
-        p = Path(file_path).expanduser()
+        if err := check_write_allowed(file_path):
+            return err
+
+        p = Path(file_path).expanduser().resolve()
         existed = p.exists()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
