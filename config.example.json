@@ -1,0 +1,21 @@
+{
+  "default_model": "glm-5-turbo",
+  "models": [
+    {
+      "model": "glm-5-turbo",
+      "api_key": "YOUR_API_KEY_HERE",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "max_tokens": 200000
+    }
+  ],
+  "mcp_servers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "exa": {
+      "url": "https://mcp.exa.ai/mcp",
+      "headers": {}
+    }
+  }
+}

@@ -49,7 +49,9 @@ class McpConnection:
             return
 
         try:
-            read_stream, write_stream, *_ = await self._exit_stack.enter_async_context(transport_ctx)
+            streams = await self._exit_stack.enter_async_context(transport_ctx)
+            read_stream = streams[0]
+            write_stream = streams[1]
             self._session = await self._exit_stack.enter_async_context(
                 ClientSession(read_stream, write_stream)
             )
@@ -93,7 +95,12 @@ class McpConnection:
 
     async def disconnect(self) -> None:
         if self._exit_stack:
-            await self._exit_stack.aclose()
+            try:
+                await self._exit_stack.aclose()
+            except Exception:
+                pass
+            self._exit_stack = None
+            self._session = None
             self._connected = False
 
 

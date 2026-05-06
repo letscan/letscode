@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Config with API keys
+config.json
+
+# Event stream logs
+.letscode/
