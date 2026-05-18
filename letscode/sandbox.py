@@ -83,7 +83,7 @@ _DEFAULT = f"""\
 {_SECRETS_DENY_WRITE}
 """
 
-# risk: full filesystem read/write; secrets are writable but writing is denied
+# risk: full filesystem read/write; secrets readable but writing is denied
 _RISK = f"""\
 (version 1)
 (deny default)

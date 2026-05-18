@@ -9,10 +9,6 @@ _SECRET_COMPONENTS = frozenset(
     [".ssh", ".aws", ".gnupg", ".netrc", "credentials"]
 )
 
-_SECRET_FILENAMES = frozenset(
-    [".env", ".envrc"]
-)
-
 
 @dataclass
 class Rules:
@@ -96,12 +92,12 @@ def _resolve_pattern(pattern: str, cwd: str) -> tuple[str, bool]:
     if pattern.startswith("**/"):
         return pattern, True
     if pattern.startswith("~/"):
-        return str(Path.home() / pattern[2:]), False
+        return os.path.realpath(Path.home() / pattern[2:]), False
     if pattern.startswith("./"):
-        return os.path.normpath(os.path.join(cwd, pattern[2:])), False
+        return os.path.realpath(os.path.join(cwd, pattern[2:])), False
     if pattern.startswith("/"):
-        return os.path.normpath(pattern), False
-    return os.path.normpath(os.path.join(cwd, pattern)), False
+        return os.path.realpath(pattern), False
+    return os.path.realpath(os.path.join(cwd, pattern)), False
 
 
 def _glob_match(path: str, pattern: str, is_recursive: bool) -> bool:

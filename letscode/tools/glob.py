@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ._types import get_cwd, check_read_allowed, check_write_allowed
+from ._types import get_cwd, check_read_allowed
 
 SCHEMA = {
     "type": "function",

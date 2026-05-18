@@ -100,20 +100,27 @@ def _call_summary(name: str, args: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def execute_tool(name: str, arguments: str) -> tuple[str, str]:
-    """Execute a tool by name. Returns (result_content, call_summary)."""
+def execute_tool(name: str, arguments: str) -> tuple[str, str, bool]:
+    """Execute a tool by name. Returns (result_content, call_summary, success)."""
+    from ._types import ToolResult
+
     try:
         args = json.loads(arguments) if arguments else {}
     except json.JSONDecodeError:
         try:
             args = json.loads(arguments, strict=False) if arguments else {}
         except json.JSONDecodeError as e:
-            return f"<error>Invalid JSON arguments: {e}</error>", f"{name}: invalid args"
+            return f"<error>Invalid JSON arguments: {e}</error>", f"{name}: invalid args", False
 
     executor = _EXECUTORS.get(name)
     if not executor:
-        return f"<error>Unknown tool: {name}</error>", f"{name}: unknown"
+        return f"<error>Unknown tool: {name}</error>", f"{name}: unknown", False
 
     result = executor(args)
     summary = _call_summary(name, args)
-    return result, summary
+
+    if isinstance(result, ToolResult):
+        content = f"<error>{result.content}</error>" if not result.success else result.content
+        return content, summary, result.success
+
+    return result, summary, True

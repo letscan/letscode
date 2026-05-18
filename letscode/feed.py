@@ -4,6 +4,19 @@ import json
 from pathlib import Path
 
 
+def _resolve_result(data: dict) -> str:
+    """Get tool result from event data, reading from file if externalized."""
+    if "result" in data:
+        return data["result"]
+    result_file = data.get("result_file")
+    if result_file:
+        try:
+            return Path(result_file).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return data.get("result_summary", "")
+    return ""
+
+
 def load_feed(path: str) -> tuple[str, list[dict]]:
     """Load a JSONL event log and rebuild the messages list.
 
@@ -106,8 +119,7 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
         elif type_ == "tool_call":
             tid = data.get("toolCallId", "")
             inp = data.get("input", {})
-            # Derive tool name from input keys
-            name = _infer_tool_name(inp)
+            name = data.get("toolName") or _infer_tool_name(inp)
             pending_tools[tid] = {
                 "id": tid,
                 "name": name,
@@ -120,9 +132,9 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
             tid = data.get("toolCallId", "")
             status = data.get("status", "")
             if status == "completed" and tid in pending_tools:
-                pending_tools[tid]["result"] = data.get("result", "")
+                pending_tools[tid]["result"] = _resolve_result(data)
             elif status == "failed" and tid in pending_tools:
-                result_text = data.get("result", "")
+                result_text = _resolve_result(data)
                 if not result_text:
                     content = data.get("content", [])
                     result_text = content[0].get("content", {}).get("text", "") if content else "failed"

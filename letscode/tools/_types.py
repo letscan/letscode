@@ -1,12 +1,21 @@
 """Shared types for tool modules."""
 
 import os
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from ..rules import Rules
 
+
+@dataclass
+class ToolResult:
+    """Structured result from a tool execution."""
+    content: str
+    success: bool = True
+
+
 # Type alias: tool executor function
-ToolExecutor = callable  # (args: dict[str, Any]) -> str
+ToolExecutor = Callable  # (args: dict[str, Any]) -> str | ToolResult
 
 # Security state — set by agent.py at startup
 _preset: str = "default"

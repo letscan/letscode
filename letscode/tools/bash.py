@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from ._types import get_cwd, get_preset, is_sandbox, check_cmd_allowed
+from ._types import ToolResult, get_cwd, get_preset, is_sandbox, check_cmd_allowed
 
 SCHEMA = {
     "type": "function",
@@ -108,10 +108,11 @@ def execute(args: dict[str, Any]) -> str:
             parts.append(result.stderr.rstrip("\n"))
         output = "\n".join(parts) if parts else "(no output)"
 
-        if result.returncode != 0:
+        success = result.returncode == 0
+        if not success:
             output += f"\n\n[Exit code: {result.returncode}]"
-        return output
+        return ToolResult(content=output, success=success)
     except subprocess.TimeoutExpired:
-        return f"<error>Command timed out after {timeout}s</error>"
+        return ToolResult(content=f"Command timed out after {timeout}s", success=False)
     except Exception as e:
-        return f"<error>{e}</error>"
+        return ToolResult(content=str(e), success=False)

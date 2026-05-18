@@ -5,8 +5,12 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import __version__
+
+# Results larger than this are written to separate files
+_RESULT_FILE_THRESHOLD = 32 * 1024  # 32KB
 
 
 # ACP tool kind mapping
@@ -14,7 +18,7 @@ _TOOL_KINDS: dict[str, str] = {
     "Read": "read",
     "Write": "edit",
     "Edit": "edit",
-    "Bash": "execute",
+    "Bash": "other",
     "Glob": "search",
     "Grep": "search",
     "Skill": "other",
@@ -53,8 +57,8 @@ def _tool_kind(name: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + \
-        f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 class EventEmitter:
@@ -66,6 +70,8 @@ class EventEmitter:
         self._start_time: float | None = None
         self._turns = 0
         self._tool_calls = 0
+        self._log_path: Path | None = None
+        self._log_file: Any = None
 
         if append_path:
             self._log_path = Path(append_path)
@@ -77,6 +83,9 @@ class EventEmitter:
             filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}.jsonl"
             self._log_path = log_dir / filename
             self._log_file = open(self._log_path, "w", encoding="utf-8")
+
+    def set_turns(self, turns: int) -> None:
+        self._turns = turns
 
     def emit(self, type_: str, data: dict) -> None:
         event = {
@@ -111,26 +120,43 @@ class EventEmitter:
         self._tool_calls += 1
         self.emit("tool_call", {
             "toolCallId": tool_call_id,
+            "toolName": name,
             "title": _tool_title(name, args),
             "kind": _tool_kind(name),
             "status": "pending",
             "input": args,
         })
 
+    def _write_result_file(self, tool_call_id: str, result: str) -> Path:
+        """Write a large result to a separate file. Returns the file path."""
+        results_dir = self._log_path.parent / (self._log_path.stem + "_results")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_path = results_dir / f"{tool_call_id}.txt"
+        result_path.write_text(result, encoding="utf-8")
+        return result_path
+
     def emit_tool_update(self, tool_call_id: str, status: str,
                          content_text: str | None = None,
                          result: str | None = None,
-                         duration_ms: int | None = None) -> None:
+                         duration_ms: int | None = None,
+                         tool_name: str | None = None) -> None:
         data: dict = {
             "toolCallId": tool_call_id,
             "status": status,
         }
+        if tool_name is not None:
+            data["toolName"] = tool_name
         if content_text is not None:
             data["content"] = [
                 {"type": "content", "content": {"type": "text", "text": content_text}},
             ]
         if result is not None:
-            data["result"] = result
+            if len(result) > _RESULT_FILE_THRESHOLD:
+                result_path = self._write_result_file(tool_call_id, result)
+                data["result_file"] = str(result_path)
+                data["result_summary"] = content_text or result[:200]
+            else:
+                data["result"] = result
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
         self.emit("tool_call_update", data)

@@ -103,7 +103,13 @@ Focus text output on:
 If you can say it in one sentence, don't use three. Prefer short, direct sentences over long explanations. This does not apply to code or tool calls."""
 
 
+_is_git_cache: bool | None = None
+
+
 def _is_git_repo() -> bool:
+    global _is_git_cache
+    if _is_git_cache is not None:
+        return _is_git_cache
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
@@ -111,9 +117,10 @@ def _is_git_repo() -> bool:
             text=True,
             timeout=5,
         )
-        return result.returncode == 0
+        _is_git_cache = result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        _is_git_cache = False
+    return _is_git_cache
 
 
 def _get_shell_name() -> str:

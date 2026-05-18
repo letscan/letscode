@@ -1,6 +1,7 @@
 """Agent loop: LLM API calls + tool execution cycle."""
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -157,9 +158,11 @@ def _run_subagent(
     verbose: bool = False,
     preset: str | None = None,
     no_sandbox: bool = False,
+    max_turns: int = 30,
+    timeout: int = 300,
 ) -> str:
     """Run a sub-agent by spawning letscode as a subprocess."""
-    cmd = [sys.executable, "-m", "letscode", "--max-turns", "30", "--no-mcp"]
+    cmd = [sys.executable, "-m", "letscode", "--max-turns", str(max_turns), "--no-mcp"]
     if config_path:
         cmd.extend(["--config", config_path])
     if verbose:
@@ -175,7 +178,7 @@ def _run_subagent(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
         output = result.stdout.strip()
@@ -185,7 +188,7 @@ def _run_subagent(
             return "(sub-agent completed with no output)"
         return output
     except subprocess.TimeoutExpired:
-        return "<error>Sub-agent timed out (300s)</error>"
+        return f"<error>Sub-agent timed out ({timeout}s)</error>"
     except Exception as e:
         return f"<error>Sub-agent failed: {e}</error>"
 
@@ -219,7 +222,6 @@ async def run_agent(
     all_tools = BUILTIN_TOOL_DEFINITIONS + mcp_tools
 
     # Build system prompt
-    import os
     cwd = os.getcwd()
     system_prompt = build_system_prompt(config.model)
 
@@ -261,7 +263,7 @@ async def run_agent(
 
         turn += 1
         if emitter:
-            emitter._turns = turn
+            emitter.set_turns(turn)
 
         try:
             text_content, tool_calls = _stream_response(
@@ -306,7 +308,9 @@ async def run_agent(
             # Parse arguments
             try:
                 args = json.loads(tool_args) if tool_args else {}
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                if verbose:
+                    print(f"  [JSON parse error for {tool_name}: {e}]", file=sys.stderr)
                 args = {}
 
             # Event: tool_call (pending)
@@ -320,17 +324,20 @@ async def run_agent(
             # Event: tool_call_update (in_progress)
             t0 = time.monotonic()
             if emitter:
-                emitter.emit_tool_update(tool_id, "in_progress")
+                emitter.emit_tool_update(tool_id, "in_progress", tool_name=tool_name)
 
             # Dispatch: Agent / MCP / built-in
+            tool_success = True
             if tool_name == "Agent":
                 sub_prompt = args.get("prompt", "")
                 result = _run_subagent(
                     sub_prompt, config_path=config_path, verbose=verbose,
                     preset=config.preset, no_sandbox=not config.sandbox,
                 )
+                tool_success = not result.startswith("<error>")
             elif tool_name.startswith("mcp__") and mcp is not None:
                 result = await mcp.call_tool(tool_name, args)
+                tool_success = not result.startswith("<error>")
             elif tool_name == "Edit":
                 # Enforce read-before-edit
                 fp = args.get("file_path", "")
@@ -339,10 +346,11 @@ async def run_agent(
                         f"<error>You must read {fp} with the Read tool before editing it. "
                         "Read the file first, then retry the edit.</error>"
                     )
+                    tool_success = False
                 else:
-                    result, _ = execute_tool(tool_name, tool_args)
+                    result, _, tool_success = execute_tool(tool_name, tool_args)
             else:
-                result, _ = execute_tool(tool_name, tool_args)
+                result, _, tool_success = execute_tool(tool_name, tool_args)
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -358,16 +366,23 @@ async def run_agent(
                 print(f"  <- {tool_name}: {result_summary}", file=sys.stderr)
 
             if emitter:
-                tc_status = "failed" if result.startswith("<error>") else "completed"
+                tc_status = "failed" if not tool_success else "completed"
                 tc_content = result_summary
-                emitter.emit_tool_update(tool_id, tc_status, tc_content, result=result, duration_ms=elapsed_ms)
+                emitter.emit_tool_update(tool_id, tc_status, tc_content, result=result, duration_ms=elapsed_ms, tool_name=tool_name)
 
             if len(result) > 50000:
                 result = result[:50000] + f"\n... (truncated, {len(result)} chars total)"
 
             if tool_name == "Skill" and not result.startswith("<error>"):
-                # Inline skill: tool_result is a short confirmation,
-                # actual content is injected as a user message
+                # Skill content is split into two messages:
+                # 1) A tool result (with tool_call_id) to satisfy the API contract
+                # 2) A user message with the expanded skill prompt, so the LLM
+                #    treats it as new instruction input rather than tool output.
+                # This does NOT violate parallel tool_calls ordering because tool
+                # results are appended sequentially in the for-loop, each with its
+                # own tool_call_id. In the event stream (ACP), skill content is
+                # carried solely by tool_call_update.result — no extra user_message
+                # event is emitted. Feed replay (feed.py) reconstructs this split.
                 skill_name = args.get("skill", "")
                 messages.append({
                     "role": "tool",
