@@ -1,7 +1,7 @@
 [project]
 name = "letscode"
-version = "0.1.0"
-description = "Lightweight Python agent harness compatible with letscode"
+version = "0.2.1"
+description = "Lightweight Python AI agent harness"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -1,3 +1,5 @@
 """letscode — lightweight Python AI agent harness."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version as _version
+
+__version__ = _version("letscode")
