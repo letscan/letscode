@@ -35,6 +35,7 @@ from acp.schema import (
 )
 
 from .. import __version__
+from .commands import SlashCommandRegistry, create_builtin_registry, parse_slash_command
 from .session import Session, create_session, list_sessions, load_session_meta, save_session
 
 logger = logging.getLogger("letscode-acp")
@@ -59,6 +60,7 @@ class LetscodeAgent:
         self._cancelled = False
         self._models: list[dict] = []
         self._default_model: str | None = None
+        self._commands: SlashCommandRegistry = create_builtin_registry()
         self._load_models()
 
     def _load_models(self) -> None:
@@ -125,6 +127,18 @@ class LetscodeAgent:
 
     # ── Agent protocol methods ──
 
+    async def _deferred_send_commands(self, session_id: str) -> None:
+        """Send available_commands_update after a delay so the response is sent first."""
+        await asyncio.sleep(0.2)
+        if self._conn is not None:
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=self._commands.to_acp_update(),
+                )
+            except Exception:
+                logger.debug("Failed to send commands update for session %s", session_id[:12], exc_info=True)
+
     async def initialize(self, protocol_version: int, **kwargs: Any) -> InitializeResponse:
         logger.info("initialize(protocol_version=%d)", protocol_version)
         return InitializeResponse(
@@ -145,6 +159,7 @@ class LetscodeAgent:
         session.model = self._default_model
         save_session(session)
         self.sessions[session.session_id] = session
+        asyncio.create_task(self._deferred_send_commands(session.session_id))
 
         return NewSessionResponse(
             session_id=session.session_id,
@@ -171,6 +186,27 @@ class LetscodeAgent:
         ]
 
         logger.info("prompt(session=%s, %d blocks)", session_id[:12], len(prompt))
+
+        # ── Slash command handling ──
+        cmd_name, cmd_args = parse_slash_command(serialized_blocks)
+        if cmd_name is not None:
+            cmd = self._commands.get(cmd_name)
+            if cmd is not None and cmd.handler is not None:
+                # Load config for commands that need LLM access (e.g. /compact)
+                from ..config import load_config
+                config, _ = load_config(self.config_path, session.model)
+                result = self._commands.dispatch(cmd_name, session, cmd_args, config=config)
+                if self._conn is not None:
+                    # Echo the user's command
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=h.update_user_message(h.text_block(f"/{cmd_name}")),
+                    )
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=h.update_agent_message_text(result.message + "\n"),
+                    )
+                return PromptResponse(stop_reason="end_turn")
 
         if session.title is None:
             title = next((b.get("text", "") for b in serialized_blocks if b.get("type") == "text"), "")
@@ -305,6 +341,7 @@ class LetscodeAgent:
                         await self._conn.session_update(session_id=session_id, update=update)
 
         self.sessions[session_id] = session
+        asyncio.create_task(self._deferred_send_commands(session_id))
 
         return LoadSessionResponse(
             config_options=self._build_config_options(session),
