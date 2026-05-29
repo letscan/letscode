@@ -193,9 +193,7 @@ def _run_subagent(
         return f"<error>Sub-agent failed: {e}</error>"
 
 
-def _stop_reason(reached_max: bool, error: bool) -> str:
-    if error:
-        return "error"
+def _stop_reason(reached_max: bool) -> str:
     if reached_max:
         return "max_turn_requests"
     return "end_turn"
@@ -210,8 +208,11 @@ async def run_agent(
     mcp: Any | None = None,
     emitter: EventEmitter | None = None,
     feed_path: str | None = None,
-) -> str:
-    """Run the agent loop until the LLM stops making tool calls."""
+) -> int:
+    """Run the agent loop until the LLM stops making tool calls.
+
+    Returns exit code: 0 for success, 1 for error.
+    """
     client = OpenAI(
         api_key=config.api_key or "dummy",
         base_url=config.base_url,
@@ -278,6 +279,8 @@ async def run_agent(
             break
 
         if not tool_calls:
+            if not text_content and emitter:
+                emitter.emit_agent_message_chunk("(no response)")
             break
 
         if text_content and not emitter:
@@ -404,7 +407,6 @@ async def run_agent(
     if emitter:
         emitter.emit_session_result(_stop_reason(
             reached_max=(max_turns is not None and turn >= max_turns),
-            error=had_error,
         ))
 
-    return ""
+    return 1 if had_error else 0

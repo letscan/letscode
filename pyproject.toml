@@ -5,12 +5,14 @@ description = "Lightweight Python agent harness compatible with letscode"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "agent-client-protocol>=0.10.0",
     "mcp>=1.27.0",
     "openai>=1.0",
 ]
 
 [project.scripts]
 letscode = "letscode.cli:main"
+letscode-acp = "letscode.acp.cli:main"
 
 [build-system]
 requires = ["hatchling"]
