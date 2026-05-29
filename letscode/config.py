@@ -20,6 +20,34 @@ class ModelConfig:
 type McpServerConfig = dict[str, any]
 
 
+def _load_config_file(config_path: str | None) -> tuple:
+    """Parse config file and return raw fields."""
+    models: list[dict] = []
+    default_model: str | None = None
+    mcp_servers: dict[str, McpServerConfig] = {}
+    sandbox_preset: str = "default"
+    sandbox: bool = True
+    rules: dict | None = None
+
+    if config_path:
+        with open(config_path) as f:
+            data = json.load(f)
+        models = data.get("models", [])
+        default_model = data.get("default_model")
+        mcp_servers = data.get("mcp_servers", {})
+        sandbox_preset = data.get("preset", "default")
+        sandbox = data.get("sandbox", True)
+        rules = data.get("rules")
+
+    return models, default_model, mcp_servers, sandbox_preset, sandbox, rules
+
+
+def list_models(config_path: str | None) -> tuple[list[dict], str | None]:
+    """Return (models_list, default_model) from config."""
+    models, default_model, *_ = _load_config_file(config_path)
+    return models, default_model
+
+
 def load_config(
     config_path: str | None, model_id: str | None = None,
 ) -> tuple[ModelConfig, dict[str, McpServerConfig]]:
@@ -37,22 +65,7 @@ def load_config(
         }
     }
     """
-    models: list[dict] = []
-    default_model: str | None = None
-    mcp_servers: dict[str, McpServerConfig] = {}
-    sandbox_preset: str = "default"
-    sandbox: bool = True
-    rules: dict | None = None
-
-    if config_path:
-        with open(config_path) as f:
-            data = json.load(f)
-        models = data.get("models", [])
-        default_model = data.get("default_model")
-        mcp_servers = data.get("mcp_servers", {})
-        sandbox_preset = data.get("preset", "default")
-        sandbox = data.get("sandbox", True)
-        rules = data.get("rules")
+    models, default_model, mcp_servers, sandbox_preset, sandbox, rules = _load_config_file(config_path)
 
     target = model_id or default_model
 

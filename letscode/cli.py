@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from .agent import run_agent
-from .config import load_config
+from .config import load_config, list_models
 from .events import EventEmitter
 from .mcp import McpManager
 
@@ -69,6 +69,14 @@ def main():
     parser.add_argument(
         "prompt",
         help="The task prompt to send to the agent",
+        nargs="?",
+        default=None,
+    )
+    parser.add_argument(
+        "--models",
+        help="List available models and exit",
+        action="store_true",
+        default=False,
     )
     parser.add_argument(
         "--config", "-c",
@@ -133,5 +141,15 @@ def main():
         default=None,
     )
     args = parser.parse_args()
+
+    if args.models:
+        models, default_model = list_models(args.config)
+        for m in models:
+            marker = " (default)" if m["model"] == default_model else ""
+            print(f"{m['model']}{marker}")
+        return
+
+    if not args.prompt:
+        parser.error("prompt is required when not using --models")
 
     asyncio.run(_async_main(args))

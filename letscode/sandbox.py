@@ -106,6 +106,18 @@ PROFILES = {
 
 VALID_PRESETS = set(PROFILES.keys())
 
+_PRESET_INFO = [
+    {"id": "safe", "name": "Safe", "description": "No writes allowed"},
+    {"id": "default", "name": "Default", "description": "Workspace writable"},
+    {"id": "risk", "name": "Risk", "description": "Full filesystem read/write"},
+]
+
+
+def list_presets() -> list[dict]:
+    """Return list of available sandbox presets with id, name, and description."""
+    return list(_PRESET_INFO)
+
+
 _cache: dict[str, str] = {}
 
 
