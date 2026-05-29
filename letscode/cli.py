@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -31,6 +32,13 @@ async def _async_main(args):
         if args.no_mcp:
             mcp_servers = {}
 
+        # Parse prompt: --prompt-format json means prompt is serialized content blocks
+        prompt = args.prompt
+        prompt_blocks = None
+        if args.prompt_format == "json":
+            prompt_blocks = json.loads(prompt)
+            prompt = _blocks_to_prompt_text(prompt_blocks)
+
         # Initialize event emitter (always writes log; stdout only with --event-stream)
         log_dir = Path(os.getcwd()) / ".letscode" / "logs"
         append_path = args.feed if (args.append and args.feed) else None
@@ -42,8 +50,9 @@ async def _async_main(args):
             if mcp_servers:
                 await mcp.connect_all(mcp_servers)
 
-            await run_agent(
-                prompt=args.prompt,
+            rc = await run_agent(
+                prompt=prompt,
+                prompt_blocks=prompt_blocks,
                 config=config,
                 config_path=args.config,
                 max_turns=args.max_turns,
@@ -54,6 +63,7 @@ async def _async_main(args):
             )
             if not args.event_stream:
                 print()  # final newline
+            return rc
         finally:
             await mcp.disconnect_all()
             emitter.close()
@@ -140,6 +150,12 @@ def main():
         choices=["safe", "default", "risk"],
         default=None,
     )
+    parser.add_argument(
+        "--prompt-format",
+        help="Prompt format: text (default) or json (serialized content blocks)",
+        choices=["text", "json"],
+        default="text",
+    )
     args = parser.parse_args()
 
     if args.models:
@@ -152,4 +168,37 @@ def main():
     if not args.prompt:
         parser.error("prompt is required when not using --models")
 
-    asyncio.run(_async_main(args))
+    rc = asyncio.run(_async_main(args))
+    if rc:
+        raise SystemExit(rc)
+
+
+def _blocks_to_prompt_text(blocks: list[dict]) -> str:
+    """Convert content blocks to prompt text for the LLM."""
+    parts: list[str] = []
+    for b in blocks:
+        t = b.get("type")
+        if t == "text":
+            parts.append(b.get("text", ""))
+        elif t == "resource_link":
+            name = b.get("name", "")
+            uri = b.get("uri", "")
+            if name:
+                parts.append(f"[@{name}]({uri})")
+            else:
+                parts.append(uri)
+        elif t == "resource":
+            res = b.get("resource", {})
+            text = res.get("text")
+            if text:
+                parts.append(text)
+            else:
+                uri = res.get("uri", "")
+                parts.append(f"[@{uri}]({uri})")
+        elif t == "image":
+            mime = b.get("mime_type")
+            data = b.get("data", "")
+            if data:
+                parts.append(f"[image:{mime}]")
+        # audio blocks silently skipped
+    return "\n".join(parts)

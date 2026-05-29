@@ -100,7 +100,8 @@ class EventEmitter:
             sys.stdout.write(line + "\n")
             sys.stdout.flush()
 
-    def emit_session_prompt(self, model: str, cwd: str, prompt: str) -> None:
+    def emit_session_prompt(self, model: str, cwd: str, prompt: str,
+                            prompt_blocks: list[dict] | None = None) -> None:
         import time
         self._start_time = time.monotonic()
         self.emit("session/prompt", {
@@ -108,7 +109,7 @@ class EventEmitter:
             "version": __version__,
             "model": model,
             "cwd": cwd,
-            "prompt": [{"type": "text", "text": prompt}],
+            "prompt": prompt_blocks if prompt_blocks else [{"type": "text", "text": prompt}],
         })
 
     def emit_agent_message_chunk(self, text: str) -> None:

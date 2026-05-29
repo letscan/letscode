@@ -184,17 +184,14 @@ class LetscodeAgent:
         if session.mode != "default":
             cmd.extend(["--preset", session.mode])
         cmd.extend(["--max-turns", str(_DEFAULT_MAX_TURNS)])
-
-        # Extract plain text from prompt blocks
-        prompt_text = "".join(
-            b.get("text", "") for b in serialized_blocks if b.get("type") == "text"
-        )
+        cmd.append("--prompt-format")
+        cmd.append("json")
 
         from .session import _sessions_dir
         log_path = _sessions_dir(session.cwd) / f"{session_id}.jsonl"
 
         cmd.extend(["--feed", str(log_path), "--append"])
-        cmd.append(prompt_text)
+        cmd.append(json.dumps(serialized_blocks, ensure_ascii=False))
 
         session.log_path = str(log_path)
         save_session(session)

@@ -208,6 +208,7 @@ async def run_agent(
     mcp: Any | None = None,
     emitter: EventEmitter | None = None,
     feed_path: str | None = None,
+    prompt_blocks: list[dict] | None = None,
 ) -> int:
     """Run the agent loop until the LLM stops making tool calls.
 
@@ -252,7 +253,7 @@ async def run_agent(
 
     # Emit session/prompt
     if emitter:
-        emitter.emit_session_prompt(config.model, cwd, prompt)
+        emitter.emit_session_prompt(config.model, cwd, prompt, prompt_blocks=prompt_blocks)
 
     turn = 0
     had_error = False
