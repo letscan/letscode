@@ -311,8 +311,10 @@ class LetscodeAgent:
         except RequestError:
             raise
         except Exception as exc:
+            import traceback
+            tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
             logger.exception("Agent subprocess error")
-            raise RequestError.internal_error({"details": f"Agent subprocess error: {exc}"}) from exc
+            raise RequestError.internal_error({"details": f"Agent subprocess error: {exc}\n{''.join(tb)}"}) from exc
         finally:
             self._agent_proc = None
             self._current_session_id = None
