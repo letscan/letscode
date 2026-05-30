@@ -35,7 +35,7 @@ from acp.schema import (
 )
 
 from .. import __version__
-from .commands import SlashCommandRegistry, create_builtin_registry, parse_slash_command
+from .commands import SlashCommandRegistry, create_builtin_registry, parse_slash_command, register_skills
 from .session import Session, create_session, list_sessions, load_session_meta, save_session
 
 logger = logging.getLogger("letscode-acp")
@@ -60,7 +60,7 @@ class LetscodeAgent:
         self._cancelled = False
         self._models: list[dict] = []
         self._default_model: str | None = None
-        self._commands: SlashCommandRegistry = create_builtin_registry()
+        self._session_commands: dict[str, SlashCommandRegistry] = {}
         self._load_models()
 
     def _load_models(self) -> None:
@@ -70,6 +70,15 @@ class LetscodeAgent:
             logger.info("Loaded %d models, default=%s", len(self._models), self._default_model)
         except Exception as e:
             logger.warning("Failed to load models: %s", e)
+
+    def _build_commands(self, cwd: str) -> SlashCommandRegistry:
+        """Create a per-session command registry with builtins + cwd-specific skills."""
+        registry = create_builtin_registry()
+        try:
+            register_skills(registry, cwd)
+        except Exception:
+            logger.debug("Skill discovery failed for cwd=%s", cwd, exc_info=True)
+        return registry
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -130,14 +139,16 @@ class LetscodeAgent:
     async def _deferred_send_commands(self, session_id: str) -> None:
         """Send available_commands_update after a delay so the response is sent first."""
         await asyncio.sleep(0.2)
-        if self._conn is not None:
-            try:
-                await self._conn.session_update(
-                    session_id=session_id,
-                    update=self._commands.to_acp_update(),
-                )
-            except Exception:
-                logger.debug("Failed to send commands update for session %s", session_id[:12], exc_info=True)
+        registry = self._session_commands.get(session_id)
+        if registry is None or self._conn is None:
+            return
+        try:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=registry.to_acp_update(),
+            )
+        except Exception:
+            logger.debug("Failed to send commands update for session %s", session_id[:12], exc_info=True)
 
     async def initialize(self, protocol_version: int, **kwargs: Any) -> InitializeResponse:
         logger.info("initialize(protocol_version=%d)", protocol_version)
@@ -159,6 +170,7 @@ class LetscodeAgent:
         session.model = self._default_model
         save_session(session)
         self.sessions[session.session_id] = session
+        self._session_commands[session.session_id] = self._build_commands(cwd)
         asyncio.create_task(self._deferred_send_commands(session.session_id))
 
         return NewSessionResponse(
@@ -188,16 +200,16 @@ class LetscodeAgent:
         logger.info("prompt(session=%s, %d blocks)", session_id[:12], len(prompt))
 
         # ── Slash command handling ──
+        registry = self._session_commands.get(session_id)
         cmd_name, cmd_args = parse_slash_command(serialized_blocks)
-        if cmd_name is not None:
-            cmd = self._commands.get(cmd_name)
+        if cmd_name is not None and registry is not None:
+            cmd = registry.get(cmd_name)
             if cmd is not None and cmd.handler is not None:
-                # Load config for commands that need LLM access (e.g. /compact)
+                # Built-in command: dispatch and return
                 from ..config import load_config
                 config, _ = load_config(self.config_path, session.model)
-                result = self._commands.dispatch(cmd_name, session, cmd_args, config=config)
+                result = registry.dispatch(cmd_name, session, cmd_args, config=config)
                 if self._conn is not None:
-                    # Echo the user's command
                     await self._conn.session_update(
                         session_id=session_id,
                         update=h.update_user_message(h.text_block(f"/{cmd_name}")),
@@ -207,6 +219,17 @@ class LetscodeAgent:
                         update=h.update_agent_message_text(result.message + "\n"),
                     )
                 return PromptResponse(stop_reason="end_turn")
+
+            if cmd is not None and cmd.is_skill:
+                # Skill command: expand template and run as agent prompt
+                from ..tools.skill import execute as skill_execute
+                expanded = skill_execute({"skill": cmd_name, "args": cmd_args})
+                if self._conn is not None:
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=h.update_user_message(h.text_block(f"/{cmd_name}")),
+                    )
+                serialized_blocks = [{"type": "text", "text": expanded}]
 
         if session.title is None:
             title = next((b.get("text", "") for b in serialized_blocks if b.get("type") == "text"), "")
@@ -341,6 +364,7 @@ class LetscodeAgent:
                         await self._conn.session_update(session_id=session_id, update=update)
 
         self.sessions[session_id] = session
+        self._session_commands[session_id] = self._build_commands(cwd)
         asyncio.create_task(self._deferred_send_commands(session_id))
 
         return LoadSessionResponse(
@@ -411,6 +435,7 @@ class LetscodeAgent:
             except ProcessLookupError:
                 pass
         self.sessions.pop(session_id, None)
+        self._session_commands.pop(session_id, None)
         return {}
 
 
@@ -479,10 +504,10 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
         if status in ("completed", "failed"):
             content = _build_completed_content(tc_id, data, pending_tool_inputs)
             if content is None and "content" in data:
-                content = [h.tool_content(h.text_block(data["content"]))]
+                content = _content_to_tool_blocks(data["content"])
             pending_tool_inputs.pop(tc_id, None)
         elif "content" in data:
-            content = [h.tool_content(h.text_block(data["content"]))]
+            content = _content_to_tool_blocks(data["content"])
 
         return h.update_tool_call(
             tool_call_id=tc_id,
@@ -491,6 +516,21 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             content=content,
         )
 
+    return None
+
+
+def _content_to_tool_blocks(content) -> list | None:
+    """Convert tool_call_update content to ACP tool content blocks."""
+    if isinstance(content, str):
+        return [h.tool_content(h.text_block(content))]
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            if isinstance(item, str):
+                texts.append(item)
+            elif isinstance(item, dict):
+                texts.append(item.get("text", str(item)))
+        return [h.tool_content(h.text_block("\n".join(texts)))] if texts else None
     return None
 
 

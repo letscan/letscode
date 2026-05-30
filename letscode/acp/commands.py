@@ -23,6 +23,7 @@ class SlashCommand:
     name: str
     description: str
     handler: object | None = None
+    is_skill: bool = False
 
 
 @dataclass
@@ -36,8 +37,8 @@ class SlashCommandRegistry:
     def __init__(self) -> None:
         self._commands: dict[str, SlashCommand] = {}
 
-    def register(self, name: str, description: str, handler) -> None:
-        self._commands[name] = SlashCommand(name=name, description=description, handler=handler)
+    def register(self, name: str, description: str, handler, *, is_skill: bool = False) -> None:
+        self._commands[name] = SlashCommand(name=name, description=description, handler=handler, is_skill=is_skill)
 
     def get(self, name: str) -> SlashCommand | None:
         return self._commands.get(name)
@@ -49,12 +50,16 @@ class SlashCommandRegistry:
         return cmd.handler(*args, **kwargs)
 
     def to_acp_update(self) -> AvailableCommandsUpdate:
+        commands = []
+        for c in self._commands.values():
+            desc = f"(Skill) {c.description}" if c.is_skill else c.description
+            commands.append(AvailableCommand(
+                name=c.name,
+                description=desc,
+            ))
         return AvailableCommandsUpdate(
             session_update="available_commands_update",
-            availableCommands=[
-                AvailableCommand(name=f"/{c.name}", description=c.description)
-                for c in self._commands.values()
-            ],
+            availableCommands=commands,
         )
 
 
@@ -226,3 +231,13 @@ def create_builtin_registry() -> SlashCommandRegistry:
     registry.register("compact", "压缩上下文，生成结构化摘要", _handle_compact)
     registry.register("undo", "回退上一轮操作", _handle_undo)
     return registry
+
+
+def register_skills(registry: SlashCommandRegistry, cwd: str) -> None:
+    """Discover skills for cwd and register them as slash commands (no handler)."""
+    from ..tools.skill import get_skill_list
+
+    for skill in get_skill_list(cwd):
+        name = skill["name"]
+        desc = skill.get("description", name)
+        registry.register(name, desc, handler=None, is_skill=True)

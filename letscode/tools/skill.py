@@ -81,18 +81,18 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return frontmatter, body
 
 
-def _skill_dirs() -> list[Path]:
+def _skill_dirs(cwd: str | None = None) -> list[Path]:
     """Return skill directories to scan, in priority order."""
     dirs: list[Path] = []
+    base = cwd or os.getcwd()
 
     # Project-level: .claude/skills/
-    cwd = os.getcwd()
-    project_skill_dir = Path(cwd) / ".claude" / "skills"
+    project_skill_dir = Path(base) / ".claude" / "skills"
     if project_skill_dir.is_dir():
         dirs.append(project_skill_dir)
 
     # Walk up to find parent .claude/skills/
-    for parent in Path(cwd).parents:
+    for parent in Path(base).parents:
         d = parent / ".claude" / "skills"
         if d.is_dir():
             dirs.append(d)
@@ -107,11 +107,11 @@ def _skill_dirs() -> list[Path]:
     return dirs
 
 
-def _discover_skills() -> dict[str, Path]:
+def _discover_skills(cwd: str | None = None) -> dict[str, Path]:
     """Scan skill directories and return {name: SKILL.md path}."""
     skills: dict[str, Path] = {}
 
-    for skill_dir in _skill_dirs():
+    for skill_dir in _skill_dirs(cwd):
         if not skill_dir.is_dir():
             continue
         for entry in sorted(skill_dir.iterdir()):
@@ -175,9 +175,9 @@ def execute(args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def get_skill_list() -> list[dict[str, str]]:
+def get_skill_list(cwd: str | None = None) -> list[dict[str, str]]:
     """Return list of {name, description} for available skills."""
-    skills = _discover_skills()
+    skills = _discover_skills(cwd)
     result = []
     for name, path in sorted(skills.items()):
         try:
