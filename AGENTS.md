@@ -4,7 +4,7 @@ This file provides guidance to letscode (letscan.ai/code) when working with code
 
 ## Project Overview
 
-letscode is a lightweight Python AI agent harness (v0.2.1) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
+letscode is a lightweight Python AI agent harness (v0.2.2) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
 
 - **Language**: Python 3.11+ (managed with `uv`)
 - **Core dependencies**: `openai>=1.0`, `mcp>=1.27.0`, `agent-client-protocol>=0.10.0`
@@ -50,7 +50,7 @@ No test suite exists yet.
 The agent loop (`run_agent`) streams LLM responses, extracts tool calls, executes them, and feeds results back until the LLM stops requesting tools. Key details:
 - Streaming uses line-buffered output to avoid per-token flicker
 - Tool call fragments are accumulated by index from streaming chunks
-- Tool results exceeding 50,000 chars are truncated
+- Tool results exceeding 50,000 chars are persisted to disk (not truncated) with a preview; the LLM can re-read the full content via the Read tool
 - MCP tools are merged with built-in tools at startup
 - Edit tool enforces read-before-edit: files must be read with Read before Edit is allowed on them (tracked via `_read_files` set)
 - Skill tool inlines result as a user message rather than a plain tool result, so the LLM sees the skill's expanded prompt directly
@@ -63,13 +63,13 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
 Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(args) -> str`. Registration is in `tools/__init__.py`. Available tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent.
 
 - **Agent tool** spawns `letscode` as a subprocess for sub-agent delegation (schema registered dynamically in `agent.py` to avoid circular imports)
-- **Grep** prefers system `rg` (ripgrep), falls back to shell `grep -E`
-- **Skill** loads and executes skill files from `.claude/skills/` directories
+- **Grep** prefers system `rg` (ripgrep), falls back to shell `grep -E`; count mode is robust against malformed lines
+- **Skill** loads and executes skill files from `.claude/skills/` and `.agents/skills/` directories (`.claude/` takes precedence); supports quoted, multi-line, and colon-containing frontmatter values
 
 ### Security Layer (`rules.py`, `sandbox.py`, `tools/_types.py`)
 Three-level access control:
 
-1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Deny rules always override allow rules. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
+1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Deny rules always override allow rules. Shell expansion detection blocks `$(...)`, backticks, and process substitution. Command splitting handles quoted strings correctly. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
 
 2. **Sandbox** (`sandbox.py`): macOS Seatbelt (`sandbox-exec`) profiles applied to Bash tool subprocesses. Three presets:
    - `safe` — read-only everywhere, no writes
@@ -85,7 +85,7 @@ CLI flags: `--preset safe|default|risk`, `--no-sandbox` to disable entirely.
 Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via the `letscode-acp` entry point. The server communicates over stdio with a client (e.g. letscode, IDE extensions).
 
 - **`server.py`** (`LetscodeAgent`): Implements ACP protocol methods — `initialize`, `new_session`, `prompt`, `cancel`, `load_session`, `list_sessions`, `set_session_mode`, `set_config_option`, `close_session`. The `prompt` method spawns `letscode --event-stream --prompt-format json` as a subprocess and translates its JSONL events into ACP `SessionUpdate` objects via `_translate_event`.
-- **`commands.py`**: Slash command registry (`SlashCommandRegistry`) with built-in commands `/new` (clear context), `/compact` (LLM-summarized context compression), `/undo` (roll back last turn). Commands are dispatched before the agent subprocess; results are sent as ACP updates.
+- **`commands.py`**: Slash command registry (`SlashCommandRegistry`) with built-in commands `/new` (clear context), `/compact` (LLM-summarized context compression), `/undo` (roll back last turn). `/compact` preserves skill activation events through compaction. Commands are dispatched before the agent subprocess; results are sent as ACP updates.
 - **`session.py`**: Session metadata persistence (`Session` dataclass) stored as JSON in `.letscode/sessions/`. Cursor-based pagination for `list_sessions`.
 
 ### MCP Integration (`mcp/client.py`)
@@ -96,17 +96,18 @@ JSONL event emitter for structured output. Always writes to `.letscode/logs/{tim
 
 ### Multi-Turn (`feed.py`, `feed_util.py`)
 - **`feed.py`**: Loads JSONL event logs and reconstructs the full conversation history (messages list). Used with `--feed <path>` to continue a previous session, optionally with `--append` to write new events into the same log file.
-- **`feed_util.py`**: Shared event log manipulation utilities — `read_events`, `write_events`, `split_turns` (splits at `session/prompt` boundaries), `extract_conversation_text` (generates readable transcript for LLM summarization), `last_agent_text`.
+- **`feed_util.py`**: Shared event log manipulation utilities — `read_events`, `write_events`, `split_turns` (splits at `session/prompt` boundaries), `extract_conversation_text` (generates readable transcript for LLM summarization), `extract_skill_activations` (finds skill prompt events that must survive compaction), `last_agent_text`.
 
 ### System Prompt (`prompt.py`)
 8-section prompt built from letscode's `src/constants/prompts.ts`. The `_env_section` dynamically injects CWD, git status, platform, shell, and OS version at runtime.
 
 ## Key Design Patterns
 
-- All tool errors are wrapped in `<error>` tags
+- All tool errors are wrapped in `<error>` tags; invalid JSON tool arguments also produce `<error>` results instead of silently defaulting to `{}`
 - Tool results are always strings (no structured output)
+- Large tool results are persisted to `{log_stem}_results/` instead of truncated
 - The config file (`config.json`) holds API keys — do not commit secrets
 - The project uses async only for MCP and ACP; the core agent loop is synchronous except where it awaits MCP calls
 - Tool SCHEMA and execute are co-located per tool module; dispatch is a simple dict lookup in `tools/__init__.py`
-- ACP server delegates to CLI subprocess: server handles protocol/session, subprocess handles agent logic — clean separation of concerns
+- ACP server delegates to CLI subprocess: server handles protocol/session, subprocess handles agent logic — clean separation of concerns; subprocess is explicitly killed and awaited on exit
 - Slash commands operate on the session's JSONL log directly (read/rewrite) before spawning the agent
