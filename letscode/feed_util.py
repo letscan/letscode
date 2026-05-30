@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+_SKILL_HEADER_PREFIX = "[Skill:"
+
 
 def read_events(log_path: str) -> list[dict]:
     """Read all events from a JSONL log file."""
@@ -119,3 +121,19 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
     if len(text) > max_chars:
         text = text[:max_chars] + "\n... (truncated)"
     return text
+
+
+def extract_skill_activations(events: list[dict]) -> list[dict]:
+    """Extract skill activation events (agent_message_chunks starting with [Skill:).
+
+    These events contain skill prompt content that should survive context compaction.
+    Returns the activation events in their original order.
+    """
+    activations: list[dict] = []
+    for ev in events:
+        if ev.get("type") != "agent_message_chunk":
+            continue
+        text = ev.get("data", {}).get("content", {}).get("text", "")
+        if text.lstrip().startswith(_SKILL_HEADER_PREFIX):
+            activations.append(ev)
+    return activations

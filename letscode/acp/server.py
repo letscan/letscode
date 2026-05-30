@@ -316,6 +316,15 @@ class LetscodeAgent:
             logger.exception("Agent subprocess error")
             raise RequestError.internal_error({"details": f"Agent subprocess error: {exc}\n{''.join(tb)}"}) from exc
         finally:
+            if self._agent_proc is not None:
+                try:
+                    self._agent_proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await self._agent_proc.wait()
+                except Exception:
+                    pass
             self._agent_proc = None
             self._current_session_id = None
 
@@ -348,22 +357,15 @@ class LetscodeAgent:
         logger.info("Loading session %s from %s", session_id[:12], session.log_path)
 
         pending_tool_inputs: dict[str, dict] = {}
-        with open(session.log_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                update = _translate_event(event, pending_tool_inputs)
-                if update is not None and self._conn is not None:
-                    if isinstance(update, list):
-                        for u in update:
-                            await self._conn.session_update(session_id=session_id, update=u)
-                    else:
-                        await self._conn.session_update(session_id=session_id, update=update)
+        events = await asyncio.to_thread(_read_log_events, session.log_path)
+        for event in events:
+            update = _translate_event(event, pending_tool_inputs)
+            if update is not None and self._conn is not None:
+                if isinstance(update, list):
+                    for u in update:
+                        await self._conn.session_update(session_id=session_id, update=u)
+                else:
+                    await self._conn.session_update(session_id=session_id, update=update)
 
         self.sessions[session_id] = session
         self._session_commands[session_id] = self._build_commands(cwd)
@@ -439,6 +441,24 @@ class LetscodeAgent:
         self.sessions.pop(session_id, None)
         self._session_commands.pop(session_id, None)
         return {}
+
+
+def _read_log_events(log_path: str) -> list[dict]:
+    """Read and parse events from a JSONL log file (blocking I/O)."""
+    events: list[dict] = []
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+    return events
 
 
 # ── Event translation ──

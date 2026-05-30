@@ -9,6 +9,7 @@ from acp.schema import AvailableCommand, AvailableCommandsUpdate
 
 from ..feed_util import (
     extract_conversation_text,
+    extract_skill_activations,
     last_agent_text,
     read_events,
     split_turns,
@@ -107,10 +108,12 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     keep_count = 1
     turns_to_keep = turns[-keep_count:]
     turns_to_summarize = turns[:-keep_count]
+    summarize_events = [ev for turn in turns_to_summarize for ev in turn]
 
-    conversation_text = extract_conversation_text(
-        [ev for turn in turns_to_summarize for ev in turn],
-    )
+    # Extract skill activations that must survive compaction
+    skill_events = extract_skill_activations(summarize_events)
+
+    conversation_text = extract_conversation_text(summarize_events)
 
     if not conversation_text.strip():
         return CommandResult(message="上下文过短，无需压缩。")
@@ -119,21 +122,22 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     config = kwargs.get("config")
     summary = _try_llm_summarize(config, conversation_text)
 
+    # Build preserved events: skill activations (kept intact) + summary + recent turns
     if summary is None:
-        # Fallback: just keep the last turn
-        kept_events = [ev for turn in turns_to_keep for ev in turn]
+        # Fallback: just keep the last turn + skill activations
+        kept_events = skill_events + [ev for turn in turns_to_keep for ev in turn]
         write_events(log_path, kept_events)
         removed_chars = len(conversation_text)
         return CommandResult(message=f"已压缩上下文（移除约 {removed_chars} 字符）。")
 
-    # Build compacted log: summary as a system note + kept turns
+    # Build compacted log: skill activations + summary + kept turns
     summary_event = {
         "type": "agent_message_chunk",
         "data": {
             "content": {"type": "text", "text": f"[上下文摘要]\n{summary}"},
         },
     }
-    kept_events = [summary_event] + [ev for turn in turns_to_keep for ev in turn]
+    kept_events = skill_events + [summary_event] + [ev for turn in turns_to_keep for ev in turn]
     write_events(log_path, kept_events)
 
     return CommandResult(message=f"已压缩上下文。摘要:\n{summary[:200]}")

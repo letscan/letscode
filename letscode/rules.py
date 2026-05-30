@@ -129,33 +129,70 @@ def _match_path(path: str, patterns: list[str], cwd: str) -> bool:
     return False
 
 
-def _match_cmd(command: str, patterns: list[str]) -> bool:
-    """Check if a shell command matches any of the glob patterns.
+def _has_shell_expansion(command: str) -> bool:
+    """Detect dangerous shell metacharacters that bypass simple pattern matching.
 
-    Splits on ; && || | to check each sub-command independently.
+    Catches command substitution $(...), backticks, and process substitution <(…) >(…).
+    These constructs allow executing arbitrary commands invisible to fnmatch-based checks.
     """
-    # Split command into individual sub-commands
-    subcmds = _split_cmd(command.strip())
-    for sub in subcmds:
-        for pat in patterns:
-            if fnmatch(sub, pat):
-                return True
+    # Command substitution: $(...)
+    if "$(" in command:
+        return True
+    # Backtick command substitution
+    if "`" in command:
+        return True
+    # Process substitution
+    if "<(" in command or ">(" in command:
+        return True
     return False
 
 
 def _split_cmd(command: str) -> list[str]:
-    """Split a shell command into sub-commands by ; && || |."""
+    """Split a shell command into sub-commands by ; && || |.
+
+    Handles quoted strings and escaped characters to avoid splitting
+    inside quoted content.
+    """
     parts = []
-    current = []
+    current: list[str] = []
     i = 0
-    while i < len(command):
+    n = len(command)
+    while i < n:
         c = command[i]
+
+        # Skip content inside single quotes
+        if c == "'":
+            current.append(c)
+            i += 1
+            while i < n and command[i] != "'":
+                current.append(command[i])
+                i += 1
+            if i < n:
+                current.append(command[i])
+                i += 1
+            continue
+
+        # Skip content inside double quotes (respect backslash escapes)
+        if c == '"':
+            current.append(c)
+            i += 1
+            while i < n and command[i] != '"':
+                if command[i] == '\\' and i + 1 < n:
+                    current.append(command[i])
+                    i += 1
+                current.append(command[i])
+                i += 1
+            if i < n:
+                current.append(command[i])
+                i += 1
+            continue
+
         if c in (';', '|', '&'):
             if current:
                 parts.append("".join(current).strip())
                 current = []
             # Skip && || sequences
-            if i + 1 < len(command) and command[i + 1] in ('&', '|'):
+            if i + 1 < n and command[i + 1] in ('&', '|'):
                 i += 1
         elif c == '\n':
             if current:
@@ -167,6 +204,19 @@ def _split_cmd(command: str) -> list[str]:
     if current:
         parts.append("".join(current).strip())
     return [p for p in parts if p]
+
+
+def _match_cmd(command: str, patterns: list[str]) -> bool:
+    """Check if a shell command matches any of the glob patterns.
+
+    Splits on ; && || | to check each sub-command independently.
+    """
+    subcmds = _split_cmd(command.strip())
+    for sub in subcmds:
+        for pat in patterns:
+            if fnmatch(sub, pat):
+                return True
+    return False
 
 
 def check_read(path: str, rules: Rules) -> str | None:
@@ -225,11 +275,15 @@ def check_cmd(command: str, rules: Rules) -> str | None:
     """Check if executing a command is allowed.
 
     Returns None if allowed, or an error message if denied.
-    Priority: deny rules > default allow.
+    Priority: deny rules > shell expansion detection > default allow.
     """
     # 1. Deny rules always win
     if _match_cmd(command, rules.deny_cmd):
         return f"<error>Command denied by denyCmd rule: {command[:80]}"
 
-    # 2. Default: allow
+    # 2. Block dangerous shell metacharacters that bypass pattern matching
+    if _has_shell_expansion(command):
+        return f"<error>Command denied: contains shell command substitution: {command[:80]}"
+
+    # 3. Default: allow
     return None

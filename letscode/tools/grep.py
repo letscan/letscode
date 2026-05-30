@@ -168,7 +168,14 @@ def _format_output(lines: list[str], output_mode: str, head_limit: int | None, o
         return header + "\n" + "\n".join(lines)
 
     if output_mode == "count":
-        total_matches = sum(int(l.split(":")[-1]) for l in lines if l)
+        total_matches = 0
+        for l in lines:
+            if not l:
+                continue
+            try:
+                total_matches += int(l.split(":")[-1])
+            except (ValueError, IndexError):
+                continue
         n_files = len(lines)
         body = "\n".join(lines)
         suffix = f"\n\nFound {total_matches} total occurrence{'s' if total_matches != 1 else ''} across {n_files} file{'s' if n_files != 1 else ''}"

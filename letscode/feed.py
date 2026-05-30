@@ -17,6 +17,29 @@ def _resolve_result(data: dict) -> str:
     return ""
 
 
+def _extract_text_from_content(content: list) -> str:
+    """Safely extract text from a content block list.
+
+    Handles nested structures like [{"type": "content", "content": {"type": "text", "text": "..."}}].
+    """
+    if not content or not isinstance(content, list):
+        return ""
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        # Direct text block
+        if item.get("type") == "text":
+            return item.get("text", "")
+        # Nested content block
+        inner = item.get("content")
+        if isinstance(inner, dict) and inner.get("type") == "text":
+            return inner.get("text", "")
+        # Fallback: try text key
+        if "text" in item:
+            return item["text"]
+    return ""
+
+
 def load_feed(path: str) -> tuple[str, list[dict]]:
     """Load a JSONL event log and rebuild the messages list.
 
@@ -136,8 +159,9 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
             elif status == "failed" and tid in pending_tools:
                 result_text = _resolve_result(data)
                 if not result_text:
-                    content = data.get("content", [])
-                    result_text = content[0].get("content", {}).get("text", "") if content else "failed"
+                    result_text = _extract_text_from_content(data.get("content", []))
+                if not result_text:
+                    result_text = "failed"
                 pending_tools[tid]["result"] = f"<error>{result_text}</error>"
 
     # Flush any remaining turn

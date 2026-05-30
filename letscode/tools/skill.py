@@ -47,28 +47,49 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Parse YAML frontmatter from a markdown string.
 
     Returns (frontmatter_dict, body_content).
+    Handles quoted values, values containing colons, and multi-line values.
     """
     if not text.startswith("---"):
         return {}, text
 
     # Find the closing ---
-    end = text.find("---", 3)
+    end = text.find("\n---", 3)
     if end == -1:
         return {}, text
 
     fm_text = text[3:end].strip()
-    body = text[end + 3:].strip()
+    body = text[end + 4:].strip()
 
-    # Minimal YAML-like parsing (key: value pairs)
     frontmatter: dict[str, Any] = {}
-    for line in fm_text.split("\n"):
-        line = line.strip()
+    lines = fm_text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
         if not line or line.startswith("#"):
             continue
-        if ":" in line:
-            key, _, val = line.partition(":")
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
+
+        # Match key: value — split on the first ": " to allow colons in values
+        m = re.match(r'^(\w[\w_-]*)\s*:\s*(.*)', line)
+        if not m:
+            continue
+        key = m.group(1)
+        val = m.group(2).strip()
+
+        # Quoted string (single or double)
+        if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+            val = val[1:-1]
+        # Multi-line value (| or > block)
+        elif val in ("|", ">") and i < len(lines):
+            block_lines: list[str] = []
+            while i < len(lines):
+                next_line = lines[i]
+                if next_line and not next_line[0].isspace():
+                    break
+                block_lines.append(next_line.strip())
+                i += 1
+            val = "\n".join(block_lines)
+        else:
             # Convert boolean/number strings
             if val.lower() in ("true", "yes"):
                 val = True
@@ -76,33 +97,38 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
                 val = False
             elif val.isdigit():
                 val = int(val)
-            frontmatter[key] = val
+
+        frontmatter[key] = val
 
     return frontmatter, body
 
 
 def _skill_dirs(cwd: str | None = None) -> list[Path]:
-    """Return skill directories to scan, in priority order."""
+    """Return skill directories to scan, in priority order.
+
+    Searches both .claude/skills/ (client-specific) and .agents/skills/
+    (cross-client interop) at each level. .claude/ takes precedence.
+    """
     dirs: list[Path] = []
     base = cwd or os.getcwd()
 
-    # Project-level: .claude/skills/
-    project_skill_dir = Path(base) / ".claude" / "skills"
-    if project_skill_dir.is_dir():
-        dirs.append(project_skill_dir)
+    def _add_skill_bases(root: Path) -> None:
+        for client_dir in (".claude", ".agents"):
+            d = root / client_dir / "skills"
+            if d.is_dir():
+                dirs.append(d)
 
-    # Walk up to find parent .claude/skills/
+    # Project-level
+    _add_skill_bases(Path(base))
+
+    # Walk up to git root
     for parent in Path(base).parents:
-        d = parent / ".claude" / "skills"
-        if d.is_dir():
-            dirs.append(d)
+        _add_skill_bases(parent)
         if (parent / ".git").is_dir():
             break
 
-    # User-level: ~/.claude/skills/
-    home_skill_dir = Path.home() / ".claude" / "skills"
-    if home_skill_dir.is_dir():
-        dirs.append(home_skill_dir)
+    # User-level
+    _add_skill_bases(Path.home())
 
     return dirs
 

@@ -36,6 +36,46 @@ def _check_file_read(file_path: str) -> bool:
     return resolved in _read_files
 
 
+def _persist_large_result(result: str, tool_id: str, emitter: EventEmitter | None) -> str:
+    """Persist a large tool result to disk and return a reference message.
+
+    Instead of truncating, writes the full result to a file and returns
+    a message with the file path and a preview. The LLM can re-read
+    the full content using the Read tool.
+    """
+    from pathlib import Path
+
+    # Reuse the event emitter's result directory if available
+    if emitter and emitter._log_path:
+        results_dir = emitter._log_path.parent / (emitter._log_path.stem + "_results")
+    else:
+        results_dir = Path(os.getcwd()) / ".letscode" / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    result_path = results_dir / f"{tool_id}.txt"
+    result_path.write_text(result, encoding="utf-8")
+
+    # Generate preview: first 2KB, cut at last newline within bounds
+    preview_limit = 2000
+    if len(result) > preview_limit:
+        truncated = result[:preview_limit]
+        last_nl = truncated.rfind("\n")
+        cut = last_nl if last_nl > preview_limit // 2 else preview_limit
+        preview = result[:cut]
+    else:
+        preview = result
+
+    size_kb = len(result) / 1024
+    return (
+        f"<persisted-output>\n"
+        f"Output too large ({size_kb:.1f} KB). "
+        f"Full output saved to: {result_path}\n\n"
+        f"Preview:\n{preview}\n"
+        f"{'...' if len(result) > preview_limit else ''}\n"
+        f"</persisted-output>"
+    )
+
+
 def _stream_response(
     client: OpenAI,
     model: str,
@@ -64,6 +104,7 @@ def _stream_response(
     text_content = ""
     tc_accum: dict[int, dict[str, str]] = {}
     line_buf = ""
+    _MAX_LINE_BUF = 100_000
 
     for chunk in response:
         if not chunk.choices:
@@ -75,6 +116,14 @@ def _stream_response(
         if delta.content:
             text_content += delta.content
             line_buf += delta.content
+            # Force flush if line_buf exceeds size limit (no newline in sight)
+            if len(line_buf) > _MAX_LINE_BUF:
+                if emitter:
+                    emitter.emit_agent_message_chunk(line_buf)
+                if not (emitter and emitter.to_stdout):
+                    output.write(line_buf + "\n")
+                    output.flush()
+                line_buf = ""
             while "\n" in line_buf:
                 line, line_buf = line_buf.split("\n", 1)
                 if emitter:
@@ -315,7 +364,13 @@ async def run_agent(
             except json.JSONDecodeError as e:
                 if verbose:
                     print(f"  [JSON parse error for {tool_name}: {e}]", file=sys.stderr)
-                args = {}
+                result = f"<error>Invalid JSON arguments for {tool_name}: {e}. Raw: {tool_args[:200]}</error>"
+                if emitter:
+                    emitter.emit_tool_call(tool_id, tool_name, {})
+                    emitter.emit_tool_update(tool_id, "in_progress", tool_name=tool_name)
+                    emitter.emit_tool_update(tool_id, "completed", tool_name=tool_name, result=result)
+                messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
+                continue
 
             # Event: tool_call (pending)
             if emitter:
@@ -375,7 +430,9 @@ async def run_agent(
                 emitter.emit_tool_update(tool_id, tc_status, tc_content, result=result, duration_ms=elapsed_ms, tool_name=tool_name)
 
             if len(result) > 50000:
-                result = result[:50000] + f"\n... (truncated, {len(result)} chars total)"
+                # Persist to disk instead of truncating, so the LLM can
+                # re-read the full content with the Read tool if needed.
+                result = _persist_large_result(result, tool_id, emitter)
 
             if tool_name == "Skill" and not result.startswith("<error>"):
                 # Skill content is split into two messages:
