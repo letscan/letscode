@@ -147,12 +147,21 @@ def execute(args: dict[str, Any]) -> str:
     # Discover available skills
     skills = _discover_skills()
 
-    if skill_name not in skills:
+    # Case-insensitive lookup: directory name is the canonical key
+    resolved = None
+    lower = skill_name.lower()
+    for name, path in skills.items():
+        if name.lower() == lower:
+            resolved = (name, path)
+            break
+
+    if resolved is None:
         available = ", ".join(sorted(skills.keys())) if skills else "none"
         return f"<error>Unknown skill: '{skill_name}'. Available skills: {available}</error>"
 
     # Read and parse the skill file
-    skill_path = skills[skill_name]
+    skill_path = resolved[1]
+    canonical_name = resolved[0]
     try:
         raw = skill_path.read_text()
     except Exception as e:
@@ -164,7 +173,7 @@ def execute(args: dict[str, Any]) -> str:
     expanded = _expand_template(body, skill_args)
 
     # Build the skill context header
-    lines = [f"[Skill: {skill_name}]"]
+    lines = [f"[Skill: {canonical_name}]"]
     if frontmatter.get("description"):
         lines.append(f"Description: {frontmatter['description']}")
     if skill_args:
