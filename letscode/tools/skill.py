@@ -164,7 +164,7 @@ def execute(args: dict[str, Any]) -> str:
     expanded = _expand_template(body, skill_args)
 
     # Build the skill context header
-    lines = [f"[Skill: {frontmatter.get('name', skill_name)}]"]
+    lines = [f"[Skill: {skill_name}]"]
     if frontmatter.get("description"):
         lines.append(f"Description: {frontmatter['description']}")
     if skill_args:
