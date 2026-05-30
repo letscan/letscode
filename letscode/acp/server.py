@@ -310,9 +310,9 @@ class LetscodeAgent:
 
         except RequestError:
             raise
-        except Exception:
+        except Exception as exc:
             logger.exception("Agent subprocess error")
-            raise RequestError.internal_error({"details": "Agent subprocess failed"})
+            raise RequestError.internal_error({"details": f"Agent subprocess error: {exc}"}) from exc
         finally:
             self._agent_proc = None
             self._current_session_id = None
