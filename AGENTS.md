@@ -50,14 +50,28 @@ No test suite exists yet.
 The agent loop (`run_agent`) streams LLM responses, extracts tool calls, executes them, and feeds results back until the LLM stops requesting tools. Key details:
 - Streaming uses line-buffered output to avoid per-token flicker
 - Tool call fragments are accumulated by index from streaming chunks
-- Tool results exceeding 50,000 chars are persisted to disk (not truncated) with a preview; the LLM can re-read the full content via the Read tool
+- All tool results go through `_process_tool_result()` — a single processing step that produces the canonical result for ALL outputs (agent context, event log, stdout). This ensures feed replay produces identical behavior
+- Results exceeding `RESULT_THRESHOLD` (32KB) are persisted to disk with a preview; the LLM can re-read the full content via the Read tool
+- Skill results are split into a tool result ("Launching skill: X") + a user message with the expanded prompt, reflected in both the messages list and a `user_message` event
 - MCP tools are merged with built-in tools at startup
 - Edit tool enforces read-before-edit: files must be read with Read before Edit is allowed on them (tracked via `_read_files` set)
-- Skill tool inlines result as a user message rather than a plain tool result, so the LLM sees the skill's expanded prompt directly
 - `prompt_blocks` parameter accepts structured content blocks (text, resource_link, image) alongside plain text prompts
 
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
+
+`config.json` schema:
+```json
+{
+  "default_model": "model-id",
+  "models": [{"model": "...", "api_key": "...", "base_url": "...", "max_tokens": 200000}],
+  "mcp_servers": {"name": {"command": "...", "args": [...]} or {"url": "..."}},
+  "preset": "safe|default|risk",
+  "sandbox": true,
+  "rules": {"allowRead": [...], "denyRead": [...], "allowWrite": [...], "denyWrite": [...], "allowCmd": [...], "denyCmd": [...]}
+}
+```
+Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
 
 ### Tool System (`tools/`)
 Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(args) -> str`. Registration is in `tools/__init__.py`. Available tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent.
@@ -69,7 +83,7 @@ Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(
 ### Security Layer (`rules.py`, `sandbox.py`, `tools/_types.py`)
 Three-level access control:
 
-1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Deny rules always override allow rules. Shell expansion detection blocks `$(...)`, backticks, and process substitution. Command splitting handles quoted strings correctly. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
+1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Config keys use camelCase: `allowRead`, `denyRead`, `allowWrite`, `denyWrite`, `allowCmd`, `denyCmd`. Deny rules always override allow rules. Shell expansion detection blocks `$(...)`, backticks, and process substitution. Command splitting handles quoted strings correctly. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
 
 2. **Sandbox** (`sandbox.py`): macOS Seatbelt (`sandbox-exec`) profiles applied to Bash tool subprocesses. Three presets:
    - `safe` — read-only everywhere, no writes
@@ -92,10 +106,10 @@ Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via
 Supports stdio and HTTP/SSE MCP servers. Configured in `config.json` under `mcp_servers`. Tools are discovered dynamically and prefixed with `mcp__`. Sub-agents skip MCP (`--no-mcp`) to avoid duplicate connections.
 
 ### Event Stream (`events.py`)
-JSONL event emitter for structured output. Always writes to `.letscode/logs/{timestamp}_{uuid}.jsonl`. With `--event-stream`, also outputs to stdout. Event types: `session.start`, `user_prompt`, `agent_message`, `tool_call`, `tool_call_update`, `error`, `session.end`. Data structures (ContentBlock, tool kind, status) are ACP-compatible. Large tool results (>32KB) are externalized to temporary files via `result_file` field.
+JSONL event emitter for structured output. Always writes to `.letscode/logs/{timestamp}_{uuid}.jsonl`. With `--event-stream`, also outputs to stdout. Event types: `session/prompt`, `agent_message_chunk`, `tool_call`, `tool_call_update`, `user_message`, `error`, `session/result`. `emit_tool_update` records the result as-is (no independent externalization) since results are already processed by `_process_tool_result`. `emit_user_message` emits synthetic user messages (e.g., expanded skill prompts). Data structures (ContentBlock, tool kind, status) are ACP-compatible.
 
 ### Multi-Turn (`feed.py`, `feed_util.py`)
-- **`feed.py`**: Loads JSONL event logs and reconstructs the full conversation history (messages list). Used with `--feed <path>` to continue a previous session, optionally with `--append` to write new events into the same log file.
+- **`feed.py`**: Loads JSONL event logs and reconstructs the full conversation history (messages list). Used with `--feed <path>` to continue a previous session, optionally with `--append` to write new events into the same log file. Handles `user_message` events for skill content. Legacy logs (with `result_file` externalization and full skill content in `tool_call_update.result`) are backward-compatible.
 - **`feed_util.py`**: Shared event log manipulation utilities — `read_events`, `write_events`, `split_turns` (splits at `session/prompt` boundaries), `extract_conversation_text` (generates readable transcript for LLM summarization), `extract_skill_activations` (finds skill prompt events that must survive compaction), `last_agent_text`.
 
 ### System Prompt (`prompt.py`)

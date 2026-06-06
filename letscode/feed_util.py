@@ -117,6 +117,11 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
                     name = data.get("toolName", "")
                     parts.append(f"[Tool Result: {name}] {summary[:200]}\n")
 
+        elif type_ == "user_message":
+            text = data.get("content", {}).get("text", "")
+            if text:
+                parts.append(f"User: {text[:200]}\n")
+
     text = "".join(parts)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n... (truncated)"

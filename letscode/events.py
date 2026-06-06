@@ -9,8 +9,8 @@ from typing import Any
 
 from . import __version__
 
-# Results larger than this are written to separate files
-_RESULT_FILE_THRESHOLD = 32 * 1024  # 32KB
+# Tool results larger than this are persisted to disk
+RESULT_THRESHOLD = 32 * 1024  # 32KB
 
 
 # ACP tool kind mapping
@@ -152,15 +152,16 @@ class EventEmitter:
                 {"type": "content", "content": {"type": "text", "text": content_text}},
             ]
         if result is not None:
-            if len(result) > _RESULT_FILE_THRESHOLD:
-                result_path = self._write_result_file(tool_call_id, result)
-                data["result_file"] = str(result_path)
-                data["result_summary"] = content_text or result[:200]
-            else:
-                data["result"] = result
+            data["result"] = result
         if duration_ms is not None:
             data["duration_ms"] = duration_ms
         self.emit("tool_call_update", data)
+
+    def emit_user_message(self, content: str) -> None:
+        """Emit a synthetic user message event (e.g., expanded skill prompt)."""
+        self.emit("user_message", {
+            "content": {"type": "text", "text": content},
+        })
 
     def emit_error(self, message: str, code: str = "unknown",
                    recoverable: bool = False) -> None:

@@ -538,6 +538,12 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             content=content,
         )
 
+    if type_ == "user_message":
+        text = data.get("content", {}).get("text", "")
+        if text:
+            return h.update_user_message(h.text_block(text))
+        return None
+
     return None
 
 
@@ -597,6 +603,7 @@ def _build_completed_content(
 
     if tool_name == "Bash":
         result_text = data.get("result", "")
+        # Legacy: old logs externalized results to result_file
         if not result_text and "result_file" in data:
             try:
                 result_text = Path(data["result_file"]).read_text(encoding="utf-8")

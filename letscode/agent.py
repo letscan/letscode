@@ -10,7 +10,7 @@ from typing import Any
 from openai import OpenAI
 
 from .config import ModelConfig
-from .events import EventEmitter
+from .events import EventEmitter, RESULT_THRESHOLD
 from .prompt import build_system_prompt
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .tools.agent import SCHEMA as AGENT_SCHEMA
@@ -37,15 +37,9 @@ def _check_file_read(file_path: str) -> bool:
 
 
 def _persist_large_result(result: str, tool_id: str, emitter: EventEmitter | None) -> str:
-    """Persist a large tool result to disk and return a reference message.
-
-    Instead of truncating, writes the full result to a file and returns
-    a message with the file path and a preview. The LLM can re-read
-    the full content using the Read tool.
-    """
+    """Persist a large tool result to disk and return a reference message."""
     from pathlib import Path
 
-    # Reuse the event emitter's result directory if available
     if emitter and emitter._log_path:
         results_dir = emitter._log_path.parent / (emitter._log_path.stem + "_results")
     else:
@@ -55,7 +49,6 @@ def _persist_large_result(result: str, tool_id: str, emitter: EventEmitter | Non
     result_path = results_dir / f"{tool_id}.txt"
     result_path.write_text(result, encoding="utf-8")
 
-    # Generate preview: first 2KB, cut at last newline within bounds
     preview_limit = 2000
     if len(result) > preview_limit:
         truncated = result[:preview_limit]
@@ -74,6 +67,31 @@ def _persist_large_result(result: str, tool_id: str, emitter: EventEmitter | Non
         f"{'...' if len(result) > preview_limit else ''}\n"
         f"</persisted-output>"
     )
+
+
+def _process_tool_result(
+    result: str, tool_id: str, tool_name: str,
+    args: dict, emitter: EventEmitter | None,
+) -> tuple[str, list[dict]]:
+    """Process a raw tool result into canonical form for all outputs.
+
+    Returns (processed_result, extra_messages) where extra_messages are
+    additional messages to append (e.g., skill user messages).
+    """
+    extra_messages: list[dict] = []
+
+    # Large result persistence
+    if len(result) > RESULT_THRESHOLD:
+        result = _persist_large_result(result, tool_id, emitter)
+
+    # Skill expansion: split into tool result + user message
+    if tool_name == "Skill" and not result.startswith("<error>"):
+        skill_name = args.get("skill", "")
+        skill_content = result
+        result = f"Launching skill: {skill_name}"
+        extra_messages.append({"role": "user", "content": skill_content})
+
+    return result, extra_messages
 
 
 def _stream_response(
@@ -419,47 +437,34 @@ async def run_agent(
                 if fp and not result.startswith("<error>"):
                     _mark_file_read(fp)
 
-            # Event: tool_call_update (completed/failed)
+            # Single processing step — produces canonical result for all outputs
+            processed_result, extra_messages = _process_tool_result(
+                result, tool_id, tool_name, args, emitter,
+            )
+
+            # Generate summary from raw result for display
             result_summary = _result_summary(tool_name, result)
             if verbose:
                 print(f"  <- {tool_name}: {result_summary}", file=sys.stderr)
 
+            # Emit events with processed result
             if emitter:
                 tc_status = "failed" if not tool_success else "completed"
-                tc_content = result_summary
-                emitter.emit_tool_update(tool_id, tc_status, tc_content, result=result, duration_ms=elapsed_ms, tool_name=tool_name)
+                emitter.emit_tool_update(
+                    tool_id, tc_status, result_summary,
+                    result=processed_result, duration_ms=elapsed_ms, tool_name=tool_name,
+                )
+                for msg in extra_messages:
+                    emitter.emit_user_message(msg["content"])
 
-            if len(result) > 50000:
-                # Persist to disk instead of truncating, so the LLM can
-                # re-read the full content with the Read tool if needed.
-                result = _persist_large_result(result, tool_id, emitter)
-
-            if tool_name == "Skill" and not result.startswith("<error>"):
-                # Skill content is split into two messages:
-                # 1) A tool result (with tool_call_id) to satisfy the API contract
-                # 2) A user message with the expanded skill prompt, so the LLM
-                #    treats it as new instruction input rather than tool output.
-                # This does NOT violate parallel tool_calls ordering because tool
-                # results are appended sequentially in the for-loop, each with its
-                # own tool_call_id. In the event stream (ACP), skill content is
-                # carried solely by tool_call_update.result — no extra user_message
-                # event is emitted. Feed replay (feed.py) reconstructs this split.
-                skill_name = args.get("skill", "")
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": f"Launching skill: {skill_name}",
-                })
-                messages.append({
-                    "role": "user",
-                    "content": result,
-                })
-            else:
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": result,
-                })
+            # Append to messages with same processed result
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": processed_result,
+            })
+            for msg in extra_messages:
+                messages.append(msg)
 
     # Emit session end
     if emitter:

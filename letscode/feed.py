@@ -5,9 +5,13 @@ from pathlib import Path
 
 
 def _resolve_result(data: dict) -> str:
-    """Get tool result from event data, reading from file if externalized."""
+    """Get tool result from event data, reading from file if externalized.
+
+    Handles both new format (result field) and legacy format (result_file field).
+    """
     if "result" in data:
         return data["result"]
+    # Legacy format: result externalized to a file
     result_file = data.get("result_file")
     if result_file:
         try:
@@ -65,10 +69,12 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
     # tool_call_id -> {id, name, arguments, result}
     pending_tools: dict[str, dict] = {}
     tool_order: list[str] = []  # preserve insertion order
+    # tool_call_id -> [extra user messages emitted after that tool result]
+    extra_after_tool: dict[str, list[dict]] = {}
 
     def flush_turn():
         """Emit assistant message + tool result messages from accumulated state."""
-        nonlocal text_parts, pending_tools, tool_order
+        nonlocal text_parts, pending_tools, tool_order, extra_after_tool
 
         if not text_parts and not tool_order:
             return
@@ -93,13 +99,14 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
             ]
         messages.append(assistant_msg)
 
-        # Tool result messages
+        # Tool result messages (with extra user messages interleaved)
         for tid in tool_order:
             tool = pending_tools[tid]
             name = tool["name"]
             result = tool.get("result", "")
 
-            if name == "Skill" and not result.startswith("<error>"):
+            # Legacy format: full skill content starts with "[Skill:"
+            if name == "Skill" and not result.startswith("<error>") and result.startswith("[Skill:"):
                 skill_name = tool.get("input", {}).get("skill", "")
                 messages.append({
                     "role": "tool",
@@ -117,9 +124,14 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
                     "content": result,
                 })
 
+            # Extra user messages associated with this tool (e.g., skill expansion)
+            for msg in extra_after_tool.get(tid, []):
+                messages.append(msg)
+
         text_parts = []
         pending_tools = {}
         tool_order = []
+        extra_after_tool = {}
 
     for ev in events:
         type_ = ev.get("type", "")
@@ -163,6 +175,14 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
                 if not result_text:
                     result_text = "failed"
                 pending_tools[tid]["result"] = f"<error>{result_text}</error>"
+
+        elif type_ == "user_message":
+            text = data.get("content", {}).get("text", "")
+            if text and tool_order:
+                last_tid = tool_order[-1]
+                extra_after_tool.setdefault(last_tid, []).append(
+                    {"role": "user", "content": text}
+                )
 
     # Flush any remaining turn
     flush_turn()
