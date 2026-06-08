@@ -284,10 +284,10 @@ class LetscodeAgent:
                 except json.JSONDecodeError:
                     continue
 
-                if event.get("type") == "session/result":
+                if event.get("type") in ("result", "session/result"):
                     stop_reason = event.get("data", {}).get("stopReason", "end_turn")
                     continue
-                if event.get("type") == "session/prompt":
+                if event.get("type") in ("session/prompt", "prompt", "init"):
                     continue
                 if event.get("type") == "error":
                     error_msg = event.get("data", {}).get("message", "unknown error")
@@ -463,48 +463,116 @@ def _read_log_events(log_path: str) -> list[dict]:
 
 # ── Event translation ──
 
+# ACP tool kind mapping
+_TOOL_KINDS: dict[str, str] = {
+    "Read": "read",
+    "Write": "edit",
+    "Edit": "edit",
+    "Bash": "other",
+    "Glob": "search",
+    "Grep": "search",
+    "Skill": "other",
+    "Agent": "other",
+}
+
+
+def _tool_kind(name: str) -> str:
+    if name.startswith("mcp__"):
+        return "other"
+    return _TOOL_KINDS.get(name, "other")
+
+
+def _tool_call_title(name: str, inp: dict) -> str:
+    if name == "Read":
+        return f"Reading {inp.get('file_path', '')}"
+    if name == "Write":
+        return f"Writing {inp.get('file_path', '')}"
+    if name == "Edit":
+        return f"Editing {inp.get('file_path', '')}"
+    if name == "Bash":
+        desc = inp.get("description", inp.get("command", ""))
+        return f"Running: {desc}"
+    if name == "Glob":
+        return f"Searching files: {inp.get('pattern', '')}"
+    if name == "Grep":
+        return f"Searching: {inp.get('pattern', '')}"
+    if name == "Skill":
+        return f"Running skill: {inp.get('skill', '')}"
+    if name == "Agent":
+        return f"Sub-agent: {inp.get('prompt', '')[:50]}"
+    if name.startswith("mcp__"):
+        parts = name[5:].split("__", 1)
+        return parts[1] if len(parts) == 2 else name
+    return name
+
+
+def _tool_result_title(name: str, inp: dict, status: str) -> str | None:
+    """Build title for tool_call_update from cached toolName + rawInput."""
+    if name == "Bash":
+        desc = inp.get("description", "")
+        if status == "completed":
+            return f"Ran: {desc}"
+        elif status == "failed":
+            return f"Failed: {desc}"
+    return None
+
+
 def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
     """Translate a letscode JSONL event to an ACP SessionUpdate object."""
     type_ = event.get("type", "")
     data = event.get("data", {})
 
+    if type_ == "init":
+        return None
+
     if type_ == "agent_message_chunk":
-        content = data.get("content", {})
-        if content.get("type") == "text" and content.get("text"):
-            return h.update_agent_message_text(content["text"] + "\n")
+        # Support both flat (new) and nested (legacy) formats
+        if "text" in data and "type" in data:
+            text = data.get("text", "")
+        else:
+            text = data.get("content", {}).get("text", "")
+        if text:
+            return h.update_agent_message_text(text + "\n")
         return None
 
     if type_ == "session/prompt":
-        prompt_blocks = data.get("prompt", [])
-        if not prompt_blocks:
-            return None
-        updates = _blocks_to_user_messages(prompt_blocks)
-        return updates if updates else None
+        # Input event — not translated to ACP
+        return None
+
+    if type_ == "prompt":
+        # Input event — not translated to ACP
+        return None
 
     if type_ == "tool_call":
         tc_id = data.get("toolCallId", "")
-        inp = data.get("input", {})
-        pending_tool_inputs[tc_id] = inp
-        title = data.get("title", "")
+        name = data.get("toolName", "")
+        inp = data.get("rawInput", data.get("input", {}))
+        pending_tool_inputs[tc_id] = {"input": inp, "name": name}
 
-        if "command" in inp:
-            desc = inp.get("description", title)
-            title = f"正在执行: {desc}"
+        title = data.get("title", "")
+        if not title or "rawInput" in data:
+            title = _tool_call_title(name, inp)
 
         locations = None
-        file_path = inp.get("file_path", "")
+        file_path = inp.get("file_path", "") if isinstance(inp, dict) else ""
         if file_path:
             locations = [ToolCallLocation(path=os.path.abspath(file_path))]
 
         raw_input: Any = inp
-        if "command" in inp:
+        if isinstance(inp, dict) and "command" in inp:
             raw_input = f"```\n{inp['command']}\n```"
+
+        kind = data.get("kind", "")
+        if not kind or "rawInput" in data:
+            kind = _tool_kind(name)
+        if not kind:
+            kind = "other"
 
         return h.start_tool_call(
             tool_call_id=tc_id,
             title=title,
-            kind=data.get("kind", "other"),
-            status=data.get("status", "pending"),
+            kind=kind,
+            status="pending",
             raw_input=raw_input,
             locations=locations,
         )
@@ -512,19 +580,17 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
     if type_ == "tool_call_update":
         tc_id = data.get("toolCallId", "")
         status = data.get("status", "")
-        inp = pending_tool_inputs.get(tc_id, {})
+        cached = pending_tool_inputs.get(tc_id, {})
+        inp = cached.get("input", {})
+        name = cached.get("name", "")
 
         title = None
-        if inp and "command" in inp:
-            desc = inp.get("description", "")
-            if status == "completed":
-                title = f"已执行: {desc}"
-            elif status == "failed":
-                title = f"执行失败: {desc}"
+        if name:
+            title = _tool_result_title(name, inp, status)
 
         content = None
         if status in ("completed", "failed"):
-            content = _build_completed_content(tc_id, data, pending_tool_inputs)
+            content = _build_completed_content(name, inp, data)
             if content is None and "content" in data:
                 content = _content_to_tool_blocks(data["content"])
             pending_tool_inputs.pop(tc_id, None)
@@ -539,9 +605,20 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
         )
 
     if type_ == "user_message":
+        # Legacy format: translate to ACP user message
         text = data.get("content", {}).get("text", "")
         if text:
             return h.update_user_message(h.text_block(text))
+        return None
+
+    # user_message_chunk: skill expansion — not translated to ACP
+
+    if type_ == "result":
+        # Not translated to session update; handled by prompt() method
+        return None
+
+    if type_ == "session/result":
+        # Legacy format
         return None
 
     return None
@@ -563,14 +640,12 @@ def _content_to_tool_blocks(content) -> list | None:
 
 
 def _build_completed_content(
-    tc_id: str, data: dict, pending_tool_inputs: dict[str, dict],
+    tool_name: str, inp: dict, data: dict,
 ) -> list | None:
     """Build ACP content for tool completions: diff, resource_link, or text."""
-    inp = pending_tool_inputs.get(tc_id)
-    if not inp:
+    if not tool_name or not inp:
         return None
 
-    tool_name = data.get("toolName", "")
     file_path = inp.get("file_path", "")
 
     if tool_name == "Read" and file_path:
@@ -602,7 +677,7 @@ def _build_completed_content(
         )]
 
     if tool_name == "Bash":
-        result_text = data.get("result", "")
+        result_text = data.get("rawOutput", data.get("result", ""))
         # Legacy: old logs externalized results to result_file
         if not result_text and "result_file" in data:
             try:

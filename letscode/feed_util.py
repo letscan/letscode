@@ -6,6 +6,15 @@ from pathlib import Path
 _SKILL_HEADER_PREFIX = "[Skill:"
 
 
+def _resolve_text(data: dict) -> str:
+    """Get result text from tool_call_update data, handling both new and legacy formats."""
+    if "rawOutput" in data:
+        return data["rawOutput"]
+    if "result" in data:
+        return data["result"]
+    return ""
+
+
 def read_events(log_path: str) -> list[dict]:
     """Read all events from a JSONL log file."""
     events = []
@@ -37,10 +46,14 @@ def split_turns(events: list[dict]) -> list[list[dict]]:
     current: list[dict] = []
 
     for ev in events:
-        if ev.get("type") == "session/prompt":
-            if current:
-                turns.append(current)
-            current = [ev]
+        if ev.get("type") in ("session/prompt", "prompt"):
+            # If current only has non-prompt preamble (e.g. init), merge into this turn
+            if current and all(e.get("type") not in ("session/prompt", "prompt") for e in current):
+                current.append(ev)
+            else:
+                if current:
+                    turns.append(current)
+                current = [ev]
         else:
             current.append(ev)
 
@@ -55,7 +68,12 @@ def last_agent_text(turn_events: list[dict]) -> str | None:
     chunks: list[str] = []
     for ev in reversed(turn_events):
         if ev.get("type") == "agent_message_chunk":
-            text = ev.get("data", {}).get("content", {}).get("text", "")
+            data = ev.get("data", {})
+            # Support both flat (new) and nested (legacy) formats
+            if "text" in data and "type" in data:
+                text = data.get("text", "")
+            else:
+                text = data.get("content", {}).get("text", "")
             if text:
                 chunks.append(text)
 
@@ -91,14 +109,26 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
             if text:
                 parts.append(f"User: {text}\n")
 
+        elif type_ == "prompt":
+            if isinstance(data, list):
+                text = "".join(b.get("text", "") for b in data if b.get("type") == "text")
+            else:
+                text = ""
+            if text:
+                parts.append(f"User: {text}\n")
+
         elif type_ == "agent_message_chunk":
-            text = data.get("content", {}).get("text", "")
+            # Support both flat (new) and nested (legacy) formats
+            if "text" in data and "type" in data:
+                text = data.get("text", "")
+            else:
+                text = data.get("content", {}).get("text", "")
             if text:
                 parts.append(f"Assistant: {text}\n")
 
         elif type_ == "tool_call":
             name = data.get("toolName", "")
-            inp = data.get("input", {})
+            inp = data.get("rawInput", data.get("input", {}))
             if "command" in inp:
                 parts.append(f"[Tool: {name}] $ {inp['command'][:200]}\n")
             elif "file_path" in inp:
@@ -111,14 +141,16 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
             if status in ("completed", "failed"):
                 summary = data.get("result_summary", "")
                 if not summary:
-                    result = data.get("result", "")
+                    result = _resolve_text(data)
                     summary = result[:100] if result else ""
                 if summary:
-                    name = data.get("toolName", "")
-                    parts.append(f"[Tool Result: {name}] {summary[:200]}\n")
+                    parts.append(f"[Tool Result] {summary[:200]}\n")
 
-        elif type_ == "user_message":
-            text = data.get("content", {}).get("text", "")
+        elif type_ in ("user_message", "user_message_chunk"):
+            if isinstance(data, dict) and "text" in data and "type" in data:
+                text = data.get("text", "")
+            else:
+                text = data.get("content", {}).get("text", "")
             if text:
                 parts.append(f"User: {text[:200]}\n")
 
@@ -138,7 +170,12 @@ def extract_skill_activations(events: list[dict]) -> list[dict]:
     for ev in events:
         if ev.get("type") != "agent_message_chunk":
             continue
-        text = ev.get("data", {}).get("content", {}).get("text", "")
+        data = ev.get("data", {})
+        # Support both flat (new) and nested (legacy) formats
+        if "text" in data and "type" in data:
+            text = data.get("text", "")
+        else:
+            text = data.get("content", {}).get("text", "")
         if text.lstrip().startswith(_SKILL_HEADER_PREFIX):
             activations.append(ev)
     return activations

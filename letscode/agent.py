@@ -318,9 +318,26 @@ async def run_agent(
             {"role": "user", "content": prompt},
         ]
 
-    # Emit session/prompt
+    # Collect tool names for init event
+    tool_names = [t["function"]["name"] for t in all_tools]
+
+    # Emit init + prompt
     if emitter:
-        emitter.emit_session_prompt(config.model, cwd, prompt, prompt_blocks=prompt_blocks)
+        from .tools._types import _preset as sec_preset, _sandbox as sec_sandbox, _rules as sec_rules
+        rules_dict = {
+            "allowRead": sec_rules.allow_read,
+            "denyRead": sec_rules.deny_read,
+            "allowWrite": sec_rules.allow_write,
+            "denyWrite": sec_rules.deny_write,
+            "allowCmd": sec_rules.allow_cmd,
+            "denyCmd": sec_rules.deny_cmd,
+        }
+        emitter.emit_init(
+            model=config.model, cwd=cwd, max_tokens=config.max_tokens,
+            max_turns=max_turns or 0, preset=config.preset, sandbox=config.sandbox,
+            tools=tool_names, rules=rules_dict,
+        )
+        emitter.emit_prompt(prompt, prompt_blocks=prompt_blocks)
 
     turn = 0
     had_error = False
@@ -385,8 +402,8 @@ async def run_agent(
                 result = f"<error>Invalid JSON arguments for {tool_name}: {e}. Raw: {tool_args[:200]}</error>"
                 if emitter:
                     emitter.emit_tool_call(tool_id, tool_name, {})
-                    emitter.emit_tool_update(tool_id, "in_progress", tool_name=tool_name)
-                    emitter.emit_tool_update(tool_id, "completed", tool_name=tool_name, result=result)
+                    emitter.emit_tool_update(tool_id, "in_progress")
+                    emitter.emit_tool_update(tool_id, "completed", raw_output=result)
                 messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
                 continue
 
@@ -399,9 +416,8 @@ async def run_agent(
                 print(_call_summary(tool_name, args), file=sys.stderr)
 
             # Event: tool_call_update (in_progress)
-            t0 = time.monotonic()
             if emitter:
-                emitter.emit_tool_update(tool_id, "in_progress", tool_name=tool_name)
+                emitter.emit_tool_update(tool_id, "in_progress")
 
             # Dispatch: Agent / MCP / built-in
             tool_success = True
@@ -429,8 +445,6 @@ async def run_agent(
             else:
                 result, _, tool_success = execute_tool(tool_name, tool_args)
 
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-
             # Track reads for edit validation
             if tool_name == "Read":
                 fp = args.get("file_path", "")
@@ -451,11 +465,10 @@ async def run_agent(
             if emitter:
                 tc_status = "failed" if not tool_success else "completed"
                 emitter.emit_tool_update(
-                    tool_id, tc_status, result_summary,
-                    result=processed_result, duration_ms=elapsed_ms, tool_name=tool_name,
+                    tool_id, tc_status, raw_output=processed_result,
                 )
                 for msg in extra_messages:
-                    emitter.emit_user_message(msg["content"])
+                    emitter.emit_user_message_chunk(msg["content"])
 
             # Append to messages with same processed result
             messages.append({
@@ -468,7 +481,7 @@ async def run_agent(
 
     # Emit session end
     if emitter:
-        emitter.emit_session_result(_stop_reason(
+        emitter.emit_result(_stop_reason(
             reached_max=(max_turns is not None and turn >= max_turns),
         ))
 

@@ -7,8 +7,11 @@ from pathlib import Path
 def _resolve_result(data: dict) -> str:
     """Get tool result from event data, reading from file if externalized.
 
-    Handles both new format (result field) and legacy format (result_file field).
+    Handles new format (rawOutput field), previous format (result field),
+    and legacy format (result_file field).
     """
+    if "rawOutput" in data:
+        return data["rawOutput"]
     if "result" in data:
         return data["result"]
     # Legacy format: result externalized to a file
@@ -137,23 +140,41 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
         type_ = ev.get("type", "")
         data = ev.get("data", {})
 
-        if type_ == "session/prompt":
+        if type_ == "init":
             model = data.get("model", "")
+
+        elif type_ == "session/prompt":
+            # Legacy format: extract model and prompt
+            model = data.get("model", "") or model
             prompt_blocks = data.get("prompt", [])
             prompt_text = "".join(
                 b.get("text", "") for b in prompt_blocks if b.get("type") == "text"
             )
             messages.append({"role": "user", "content": prompt_text})
 
+        elif type_ == "prompt":
+            # New format: data is directly content blocks list
+            if isinstance(data, list):
+                prompt_text = "".join(
+                    b.get("text", "") for b in data if b.get("type") == "text"
+                )
+            else:
+                prompt_text = ""
+            messages.append({"role": "user", "content": prompt_text})
+
         elif type_ == "agent_message_chunk":
             # New text after tool_calls means a new turn boundary
             if tool_order:
                 flush_turn()
-            text_parts.append(data.get("content", {}).get("text", ""))
+            # Support both flat (new) and nested (legacy) formats
+            if "text" in data and "type" in data:
+                text_parts.append(data.get("text", ""))
+            else:
+                text_parts.append(data.get("content", {}).get("text", ""))
 
         elif type_ == "tool_call":
             tid = data.get("toolCallId", "")
-            inp = data.get("input", {})
+            inp = data.get("rawInput", data.get("input", {}))
             name = data.get("toolName") or _infer_tool_name(inp)
             pending_tools[tid] = {
                 "id": tid,
@@ -176,8 +197,12 @@ def load_feed(path: str) -> tuple[str, list[dict]]:
                     result_text = "failed"
                 pending_tools[tid]["result"] = f"<error>{result_text}</error>"
 
-        elif type_ == "user_message":
-            text = data.get("content", {}).get("text", "")
+        elif type_ in ("user_message", "user_message_chunk"):
+            # Support both old and new format
+            if isinstance(data, dict) and "text" in data and "type" in data:
+                text = data.get("text", "")
+            else:
+                text = data.get("content", {}).get("text", "")
             if text and tool_order:
                 last_tid = tool_order[-1]
                 extra_after_tool.setdefault(last_tid, []).append(
