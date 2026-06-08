@@ -97,7 +97,7 @@ class McpConnection:
         if self._exit_stack:
             try:
                 await self._exit_stack.aclose()
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
             self._exit_stack = None
             self._session = None
