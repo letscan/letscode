@@ -13,6 +13,12 @@ letscode is a lightweight Python AI agent harness (v0.2.2) that implements a ReA
 ## Common Commands
 
 ```bash
+# Install dependencies (uv required)
+uv sync
+
+# Create config from template
+cp config.example.json config.json
+
 # Run the agent
 letscode "your prompt here"
 python -m letscode "your prompt here"
@@ -34,9 +40,6 @@ letscode --feed .letscode/logs/20260501_abcd.jsonl --append "follow-up prompt"
 
 # Run ACP server (stdio protocol for IDE/CP integration)
 letscode-acp [-c config.json]
-
-# Install dependencies (uv required)
-uv sync
 
 # Run directly without install
 uv run python -m letscode "prompt"
@@ -76,7 +79,7 @@ Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case
 ### Tool System (`tools/`)
 Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(args) -> str`. Registration is in `tools/__init__.py`. Available tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent.
 
-- **Agent tool** spawns `letscode` as a subprocess for sub-agent delegation (schema registered dynamically in `agent.py` to avoid circular imports)
+- **Agent tool** spawns `letscode` as a subprocess for sub-agent delegation (schema registered dynamically in `agent.py` to avoid circular imports). Defaults: 30 max turns, 300s timeout
 - **Grep** prefers system `rg` (ripgrep), falls back to shell `grep -E`; count mode is robust against malformed lines
 - **Skill** loads and executes skill files from `.claude/skills/` and `.agents/skills/` directories (`.claude/` takes precedence); supports quoted, multi-line, and colon-containing frontmatter values
 
@@ -103,7 +106,7 @@ Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via
 - **`session.py`**: Session metadata persistence (`Session` dataclass) stored as JSON in `.letscode/sessions/`. Cursor-based pagination for `list_sessions`.
 
 ### MCP Integration (`mcp/client.py`)
-Supports stdio and HTTP/SSE MCP servers. Configured in `config.json` under `mcp_servers`. Tools are discovered dynamically and prefixed with `mcp__`. Sub-agents skip MCP (`--no-mcp`) to avoid duplicate connections.
+Supports stdio, HTTP/SSE, and streamable HTTP MCP servers. Configured in `config.json` under `mcp_servers`. Tools are discovered dynamically and prefixed with `mcp__`. Sub-agents skip MCP (`--no-mcp`) to avoid duplicate connections.
 
 ### Event Stream (`events.py`)
 JSONL event emitter for structured output. Always writes to `.letscode/logs/{timestamp}_{uuid}.jsonl`. With `--event-stream`, also outputs to stdout. Event types: `session/prompt`, `agent_message_chunk`, `tool_call`, `tool_call_update`, `user_message`, `error`, `session/result`. `emit_tool_update` records the result as-is (no independent externalization) since results are already processed by `_process_tool_result`. `emit_user_message` emits synthetic user messages (e.g., expanded skill prompts). Data structures (ContentBlock, tool kind, status) are ACP-compatible.

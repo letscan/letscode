@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Any
 
-from ._types import check_write_allowed
-
 SCHEMA = {
     "type": "function",
     "function": {
@@ -55,15 +53,22 @@ SCHEMA = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], *, validate_path=None, is_file_read=None, **_) -> str:
     file_path = args.get("file_path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
     replace_all = args.get("replace_all", False)
 
     try:
-        if err := check_write_allowed(file_path):
-            return err
+        if validate_path:
+            if err := validate_path("write", file_path):
+                return err
+
+        if is_file_read and not is_file_read(file_path):
+            return (
+                f"<error>You must read {file_path} with the Read tool before editing it. "
+                "Read the file first, then retry the edit.</error>"
+            )
 
         p = Path(file_path).expanduser().resolve()
         if not p.exists():

@@ -8,8 +8,13 @@ from pathlib import Path
 
 from .agent import run_agent
 from .config import load_config, list_models
-from .events import EventEmitter
+from .events import EventEmitter, set_emitter
 from .mcp import McpManager
+from .mcp.client import set_manager
+from .prompt import build_system_prompt
+from .rules import load_rules, merge_rules
+from .tools import TOOL_DEFINITIONS, EXECUTORS
+from .tools.runner import ToolRunner
 
 
 async def _async_main(args):
@@ -27,39 +32,68 @@ async def _async_main(args):
             config.sandbox = False
         if args.preset:
             config.preset = args.preset
+        config.verbose = args.verbose
 
         # Sub-agents skip MCP to avoid duplicate connections and cleanup issues
         if args.no_mcp:
             mcp_servers = {}
 
-        # Parse prompt: --prompt-format json means prompt is serialized content blocks
-        prompt = args.prompt
-        prompt_blocks = None
+        # Build prompt_blocks (always structured)
         if args.prompt_format == "json":
-            prompt_blocks = json.loads(prompt)
-            prompt = _blocks_to_prompt_text(prompt_blocks)
+            prompt_blocks = json.loads(args.prompt)
+        else:
+            prompt_blocks = [{"type": "text", "text": args.prompt}]
 
-        # Initialize event emitter (always writes log; stdout only with --event-stream)
+        # Initialize event emitter
         log_dir = Path(os.getcwd()) / ".letscode" / "logs"
         append_path = args.feed if (args.append and args.feed) else None
         emitter = EventEmitter(log_dir, to_stdout=args.event_stream,
                                append_path=append_path)
+        set_emitter(emitter)
 
+        # Initialize MCP
         mcp = McpManager()
+        set_manager(mcp)
+
         try:
             if mcp_servers:
-                await mcp.connect_all(mcp_servers)
+                await mcp.connect_all(mcp_servers, quiet=args.event_stream)
+
+            # Build security rules
+            user_rules = load_rules(config.rules)
+            rules = merge_rules(config.preset, user_rules)
+
+            # Create ToolRunner
+            tool_runner = ToolRunner(
+                definitions=TOOL_DEFINITIONS,
+                executors=EXECUTORS,
+                mcp=mcp,
+                rules=rules,
+                preset=config.preset,
+                sandbox=config.sandbox,
+                agent_config={
+                    "config_path": args.config,
+                    "preset": config.preset,
+                    "sandbox": config.sandbox,
+                    "verbose": args.verbose,
+                },
+            )
+
+            # Build system_prompt (feed scenario uses feed model)
+            model = config.model
+            if args.feed:
+                from .feed import load_feed
+                feed_model, _ = load_feed(args.feed)
+                model = feed_model or model
+            system_prompt = build_system_prompt(model)
 
             rc = await run_agent(
-                prompt=prompt,
                 prompt_blocks=prompt_blocks,
+                system_prompt=system_prompt,
                 config=config,
-                config_path=args.config,
                 max_turns=args.max_turns,
-                verbose=args.verbose,
-                mcp=mcp,
-                emitter=emitter,
                 feed_path=args.feed,
+                tool_runner=tool_runner,
             )
             if not args.event_stream:
                 print()  # final newline
@@ -67,6 +101,8 @@ async def _async_main(args):
         finally:
             await mcp.disconnect_all()
             emitter.close()
+            set_manager(None)
+            set_emitter(None)
     finally:
         os.chdir(original_cwd)
 
@@ -171,34 +207,3 @@ def main():
     rc = asyncio.run(_async_main(args))
     if rc:
         raise SystemExit(rc)
-
-
-def _blocks_to_prompt_text(blocks: list[dict]) -> str:
-    """Convert content blocks to prompt text for the LLM."""
-    parts: list[str] = []
-    for b in blocks:
-        t = b.get("type")
-        if t == "text":
-            parts.append(b.get("text", ""))
-        elif t == "resource_link":
-            name = b.get("name", "")
-            uri = b.get("uri", "")
-            if name:
-                parts.append(f"[@{name}]({uri})")
-            else:
-                parts.append(uri)
-        elif t == "resource":
-            res = b.get("resource", {})
-            text = res.get("text")
-            if text:
-                parts.append(text)
-            else:
-                uri = res.get("uri", "")
-                parts.append(f"[@{uri}]({uri})")
-        elif t == "image":
-            mime = b.get("mime_type")
-            data = b.get("data", "")
-            if data:
-                parts.append(f"[image:{mime}]")
-        # audio blocks silently skipped
-    return "\n".join(parts)

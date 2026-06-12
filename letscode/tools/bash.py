@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from ._types import ToolResult, get_cwd, get_preset, is_sandbox, check_cmd_allowed
+from ._types import ToolResult
 
 SCHEMA = {
     "type": "function",
@@ -76,20 +76,16 @@ SCHEMA = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], *, preset: str = "default", sandbox: bool = True, **_) -> str | ToolResult:
     command = args.get("command", "")
     timeout_ms = args.get("timeout")
     timeout = min(timeout_ms / 1000, 1800) if timeout_ms else 120
 
-    if err := check_cmd_allowed(command):
-        return err
-
     shell = os.environ.get("SHELL", "/bin/bash")
-    cwd = get_cwd()
+    cwd = os.getcwd()
     cmd = [shell, "-c", command]
 
-    preset = get_preset()
-    if is_sandbox() and preset in ("safe", "default", "risk") and shutil.which("sandbox-exec"):
+    if sandbox and preset in ("safe", "default", "risk") and shutil.which("sandbox-exec"):
         from ..sandbox import wrap_command
         cmd = wrap_command(cmd, cwd, preset)
 

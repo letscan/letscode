@@ -13,6 +13,7 @@ class ModelConfig:
     max_tokens: int = 16384
     preset: str = "default"
     sandbox: bool = True
+    verbose: bool = False
     rules: dict | None = None
 
 

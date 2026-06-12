@@ -6,6 +6,8 @@ import sys
 from contextlib import AsyncExitStack
 from typing import Any
 
+_DEFAULT_CONNECT_TIMEOUT = 30  # seconds
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
@@ -45,7 +47,6 @@ class McpConnection:
             else:
                 transport_ctx = streamablehttp_client(url=url, headers=headers)
         else:
-            print(f"  [MCP] Skipping '{self.name}': no command or url", file=sys.stderr)
             return
 
         try:
@@ -70,10 +71,8 @@ class McpConnection:
                 })
 
             self._connected = True
-            print(f"  [MCP] {self.name}: {len(self.tools)} tools loaded", file=sys.stderr)
-
-        except Exception as e:
-            print(f"  [MCP] {self.name}: connect failed — {e}", file=sys.stderr)
+        except Exception:
+            pass
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         """Call a tool on this MCP server. tool_name is the original name (without prefix)."""
@@ -110,12 +109,23 @@ class McpManager:
     def __init__(self):
         self._connections: dict[str, McpConnection] = {}
 
-    async def connect_all(self, servers: dict[str, dict[str, Any]]) -> None:
+    async def connect_all(self, servers: dict[str, dict[str, Any]],
+                          timeout: float = _DEFAULT_CONNECT_TIMEOUT,
+                          quiet: bool = False) -> None:
         """Connect to all configured MCP servers."""
         for name, config in servers.items():
             conn = McpConnection(name, config)
             self._connections[name] = conn
-            await conn.connect()
+            try:
+                await asyncio.wait_for(conn.connect(), timeout=timeout)
+                if not quiet:
+                    print(f"  [MCP] {name}: {len(conn.tools)} tools loaded", file=sys.stderr)
+            except asyncio.TimeoutError:
+                if not quiet:
+                    print(f"  [MCP] {name}: connect timed out ({timeout}s), skipping", file=sys.stderr)
+            except Exception as e:
+                if not quiet:
+                    print(f"  [MCP] {name}: connect failed — {e}", file=sys.stderr)
 
     def get_tool_definitions(self) -> list[dict]:
         """Return OpenAI function-calling tool definitions for all MCP tools."""
@@ -153,3 +163,21 @@ class McpManager:
         for conn in self._connections.values():
             await conn.disconnect()
         self._connections.clear()
+
+
+# ---------------------------------------------------------------------------
+# Global manager singleton
+# ---------------------------------------------------------------------------
+
+_manager: McpManager | None = None
+
+
+def set_manager(m: McpManager | None) -> None:
+    """Register the global MCP manager for this session."""
+    global _manager
+    _manager = m
+
+
+def get_manager() -> McpManager | None:
+    """Return the current session's MCP manager, if any."""
+    return _manager

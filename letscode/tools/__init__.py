@@ -1,9 +1,9 @@
 """Tool definitions and dispatch for letscode."""
 
-import json
 from typing import Any
 
 from . import bash, edit, glob, grep, read, skill, write
+from . import agent
 
 # ---------------------------------------------------------------------------
 # Tool schema list (for API calls)
@@ -17,23 +17,8 @@ TOOL_DEFINITIONS = [
     glob.SCHEMA,
     grep.SCHEMA,
     skill.SCHEMA,
-    # Agent SCHEMA is added dynamically in agent.py to avoid circular import
+    agent.SCHEMA,
 ]
-
-# ---------------------------------------------------------------------------
-# Tool executor registry
-# ---------------------------------------------------------------------------
-
-_EXECUTORS: dict[str, callable] = {
-    "Bash": bash.execute,
-    "Read": read.execute,
-    "Write": write.execute,
-    "Edit": edit.execute,
-    "Glob": glob.execute,
-    "Grep": grep.execute,
-    "Skill": skill.execute,
-    # Agent executor is registered dynamically in agent.py
-}
 
 
 # ---------------------------------------------------------------------------
@@ -96,31 +81,64 @@ def _call_summary(name: str, args: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public dispatch
+# Result summary (verbose logging)
 # ---------------------------------------------------------------------------
 
 
-def execute_tool(name: str, arguments: str) -> tuple[str, str, bool]:
-    """Execute a tool by name. Returns (result_content, call_summary, success)."""
-    from ._types import ToolResult
+def _result_summary(name: str, result: str) -> str:
+    """Generate a one-line summary of the tool result."""
+    if result.startswith("<error>"):
+        msg = result.removeprefix("<error>").removesuffix("</error>").strip()
+        return f"ERROR: {msg}"
+    if name == "Bash":
+        lines = result.strip().split("\n")
+        last = lines[-1].strip() if lines else ""
+        if len(lines) > 1:
+            return f"{len(lines)} lines"
+        return last[:80] if last else "(no output)"
+    if name == "Read":
+        return f"{len(result.strip().splitlines())} lines"
+    if name == "Write":
+        return result
+    if name == "Edit":
+        return result
+    if name == "Glob":
+        lines = result.strip().split("\n")
+        if "truncated" in result:
+            return f"{len(lines)} files (truncated)"
+        return f"{len(lines)} files"
+    if name == "Grep":
+        if result.startswith("Found "):
+            return result.split("\n")[0]
+        if result.startswith("No matches"):
+            return "No matches"
+        return f"{len(result.strip().splitlines())} lines"
+    if name == "Skill":
+        if result.startswith("<error>"):
+            msg = result.removeprefix("<error>").removesuffix("</error>").strip()
+            return f"ERROR: {msg}"
+        return f"{len(result.strip().splitlines())} lines"
+    if name == "Agent":
+        return result.split("\n")[0][:100]
+    if name.startswith("mcp__"):
+        if result.startswith("<error>"):
+            msg = result.removeprefix("<error>").removesuffix("</error>").strip()
+            return f"ERROR: {msg}"
+        return result.split("\n")[0][:100]
+    return "ok"
 
-    try:
-        args = json.loads(arguments) if arguments else {}
-    except json.JSONDecodeError:
-        try:
-            args = json.loads(arguments, strict=False) if arguments else {}
-        except json.JSONDecodeError as e:
-            return f"<error>Invalid JSON arguments: {e}</error>", f"{name}: invalid args", False
 
-    executor = _EXECUTORS.get(name)
-    if not executor:
-        return f"<error>Unknown tool: {name}</error>", f"{name}: unknown", False
+# ---------------------------------------------------------------------------
+# Executor registry (for ToolRunner)
+# ---------------------------------------------------------------------------
 
-    result = executor(args)
-    summary = _call_summary(name, args)
-
-    if isinstance(result, ToolResult):
-        content = f"<error>{result.content}</error>" if not result.success else result.content
-        return content, summary, result.success
-
-    return result, summary, True
+EXECUTORS: dict[str, callable] = {
+    "Bash": bash.execute,
+    "Read": read.execute,
+    "Write": write.execute,
+    "Edit": edit.execute,
+    "Glob": glob.execute,
+    "Grep": grep.execute,
+    "Skill": skill.execute,
+    "Agent": agent.execute,
+}

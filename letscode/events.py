@@ -13,6 +13,24 @@ from . import __version__
 RESULT_THRESHOLD = 32 * 1024  # 32KB
 
 
+# ---------------------------------------------------------------------------
+# Global emitter singleton
+# ---------------------------------------------------------------------------
+
+_emitter: "EventEmitter | None" = None
+
+
+def set_emitter(e: "EventEmitter | None") -> None:
+    """Register the global event emitter for this session."""
+    global _emitter
+    _emitter = e
+
+
+def get_emitter() -> "EventEmitter | None":
+    """Return the current session's event emitter, if any."""
+    return _emitter
+
+
 def _now() -> str:
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
@@ -152,3 +170,41 @@ class EventEmitter:
     def close(self) -> None:
         if self._log_file and not self._log_file.closed:
             self._log_file.close()
+
+    # ------------------------------------------------------------------
+    # High-level convenience methods
+    # ------------------------------------------------------------------
+
+    def on_text_line(self, text: str) -> None:
+        """Emit agent_message_chunk + write plain text to stdout if not event-stream mode."""
+        self.emit_agent_message_chunk(text)
+        if not self.to_stdout:
+            sys.stdout.write(text + "\n")
+            sys.stdout.flush()
+
+    def persist_result(self, result: str, tool_id: str) -> str:
+        """Persist a large tool result to disk. Returns the reference message."""
+        result_path = self._write_result_file(tool_id, result)
+
+        preview_limit = 2000
+        if len(result) > preview_limit:
+            truncated = result[:preview_limit]
+            last_nl = truncated.rfind("\n")
+            cut = last_nl if last_nl > preview_limit // 2 else preview_limit
+            preview = result[:cut]
+        else:
+            preview = result
+
+        size_kb = len(result) / 1024
+        return (
+            f"<persisted-output>\n"
+            f"Output too large ({size_kb:.1f} KB). "
+            f"Full output saved to: {result_path}\n\n"
+            f"Preview:\n{preview}\n"
+            f"{'...' if len(result) > preview_limit else ''}\n"
+            f"</persisted-output>"
+        )
+
+    def on_session_end(self, stop_reason: str) -> None:
+        """Emit the session result event (end_turn)."""
+        self.emit_result(stop_reason)

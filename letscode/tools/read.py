@@ -3,8 +3,6 @@
 from pathlib import Path
 from typing import Any
 
-from ._types import check_read_allowed
-
 SCHEMA = {
     "type": "function",
     "function": {
@@ -48,14 +46,15 @@ SCHEMA = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], *, validate_path=None, **_) -> str:
     file_path = args.get("file_path", "")
     offset = args.get("offset")
     limit = args.get("limit")
 
     try:
-        if err := check_read_allowed(file_path):
-            return err
+        if validate_path:
+            if err := validate_path("read", file_path):
+                return err
 
         p = Path(file_path).expanduser().resolve()
         if p.is_dir():

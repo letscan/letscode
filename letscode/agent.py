@@ -1,344 +1,116 @@
-"""Agent loop: LLM API calls + tool execution cycle."""
+"""Agent loop — LLM call → tool execution → result feedback cycle."""
 
-import json
 import os
-import subprocess
 import sys
-import time
 from typing import Any
 
 from openai import OpenAI
 
 from .config import ModelConfig
-from .events import EventEmitter, RESULT_THRESHOLD
-from .prompt import build_system_prompt
-from .tools import TOOL_DEFINITIONS, execute_tool
-from .tools.agent import SCHEMA as AGENT_SCHEMA
-
-# Built-in tool definitions including Agent
-BUILTIN_TOOL_DEFINITIONS = TOOL_DEFINITIONS + [AGENT_SCHEMA]
-
-# Track files read in the current session for edit validation
-_read_files: set[str] = set()
+from .events import get_emitter, RESULT_THRESHOLD
+from .mcp import get_manager
+from .stream import consume_stream
+from .tools import TOOL_DEFINITIONS, _call_summary, _result_summary
+from .tools.runner import ToolRunner
+from .tools._types import ToolResult
 
 
-def _mark_file_read(file_path: str) -> None:
-    """Record that a file has been read in this session."""
-    from pathlib import Path
-    resolved = str(Path(file_path).expanduser().resolve())
-    _read_files.add(resolved)
-
-
-def _check_file_read(file_path: str) -> bool:
-    """Check whether a file has been read in this session."""
-    from pathlib import Path
-    resolved = str(Path(file_path).expanduser().resolve())
-    return resolved in _read_files
-
-
-def _persist_large_result(result: str, tool_id: str, emitter: EventEmitter | None) -> str:
-    """Persist a large tool result to disk and return a reference message."""
-    from pathlib import Path
-
-    if emitter and emitter._log_path:
-        results_dir = emitter._log_path.parent / (emitter._log_path.stem + "_results")
-    else:
-        results_dir = Path(os.getcwd()) / ".letscode" / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    result_path = results_dir / f"{tool_id}.txt"
-    result_path.write_text(result, encoding="utf-8")
-
-    preview_limit = 2000
-    if len(result) > preview_limit:
-        truncated = result[:preview_limit]
-        last_nl = truncated.rfind("\n")
-        cut = last_nl if last_nl > preview_limit // 2 else preview_limit
-        preview = result[:cut]
-    else:
-        preview = result
-
-    size_kb = len(result) / 1024
-    return (
-        f"<persisted-output>\n"
-        f"Output too large ({size_kb:.1f} KB). "
-        f"Full output saved to: {result_path}\n\n"
-        f"Preview:\n{preview}\n"
-        f"{'...' if len(result) > preview_limit else ''}\n"
-        f"</persisted-output>"
-    )
+def _blocks_to_text(blocks: list[dict]) -> str:
+    """Convert structured content blocks to plain text for the LLM."""
+    parts: list[str] = []
+    for b in blocks:
+        t = b.get("type")
+        if t == "text":
+            parts.append(b.get("text", ""))
+        elif t == "resource_link":
+            name = b.get("name", "")
+            uri = b.get("uri", "")
+            parts.append(f"[@{name}]({uri})" if name else uri)
+        elif t == "resource":
+            text = b.get("resource", {}).get("text")
+            parts.append(text if text else b.get("resource", {}).get("uri", ""))
+        elif t == "image":
+            parts.append(f"[image:{b.get('mime_type')}]")
+    return "\n".join(parts)
 
 
 def _process_tool_result(
-    result: str, tool_id: str, tool_name: str,
-    args: dict, emitter: EventEmitter | None,
+    result: str, tool_id: str, tool_name: str, args: dict,
 ) -> tuple[str, list[dict]]:
-    """Process a raw tool result into canonical form for all outputs.
-
-    Returns (processed_result, extra_messages) where extra_messages are
-    additional messages to append (e.g., skill user messages).
-    """
+    """Post-process a raw tool result: persist if large, expand if skill."""
+    emitter = get_emitter()
     extra_messages: list[dict] = []
 
-    # Large result persistence
-    if len(result) > RESULT_THRESHOLD:
-        result = _persist_large_result(result, tool_id, emitter)
+    if len(result) > RESULT_THRESHOLD and emitter:
+        result = emitter.persist_result(result, tool_id)
 
-    # Skill expansion: split into tool result + user message
     if tool_name == "Skill" and not result.startswith("<error>"):
         skill_name = args.get("skill", "")
-        skill_content = result
+        extra_messages.append({"role": "user", "content": result})
         result = f"Launching skill: {skill_name}"
-        extra_messages.append({"role": "user", "content": skill_content})
 
     return result, extra_messages
 
 
-def _stream_response(
-    client: OpenAI,
-    model: str,
-    messages: list[dict],
-    max_tokens: int,
-    tools: list[dict] | None = None,
-    output: Any = None,
-    emitter: EventEmitter | None = None,
-) -> tuple[str, list[dict]]:
-    """Make a streaming API call. Returns (text_content, tool_calls).
-
-    output: file-like object to write text to. Defaults to sys.stdout.
-    emitter: optional event emitter for agent_message events.
-    """
-    if output is None:
-        output = sys.stdout
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools or BUILTIN_TOOL_DEFINITIONS,
-        max_tokens=max_tokens,
-        stream=True,
-    )
-
-    text_content = ""
-    tc_accum: dict[int, dict[str, str]] = {}
-    line_buf = ""
-    _MAX_LINE_BUF = 100_000
-
-    for chunk in response:
-        if not chunk.choices:
-            continue
-
-        delta = chunk.choices[0].delta
-
-        # Line-buffered text output
-        if delta.content:
-            text_content += delta.content
-            line_buf += delta.content
-            # Force flush if line_buf exceeds size limit (no newline in sight)
-            if len(line_buf) > _MAX_LINE_BUF:
-                if emitter:
-                    emitter.emit_agent_message_chunk(line_buf)
-                if not (emitter and emitter.to_stdout):
-                    output.write(line_buf + "\n")
-                    output.flush()
-                line_buf = ""
-            while "\n" in line_buf:
-                line, line_buf = line_buf.split("\n", 1)
-                if emitter:
-                    emitter.emit_agent_message_chunk(line)
-                if not (emitter and emitter.to_stdout):
-                    output.write(line + "\n")
-                    output.flush()
-
-        # Accumulate tool call fragments
-        if delta.tool_calls:
-            for tc_delta in chunk.choices[0].delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tc_accum:
-                    tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                if tc_delta.id:
-                    tc_accum[idx]["id"] = tc_delta.id
-                if tc_delta.function:
-                    if tc_delta.function.name:
-                        tc_accum[idx]["name"] = tc_delta.function.name
-                    if tc_delta.function.arguments:
-                        tc_accum[idx]["arguments"] += tc_delta.function.arguments
-
-    # Flush remaining buffered text
-    if line_buf:
-        if emitter:
-            emitter.emit_agent_message_chunk(line_buf)
-        if not (emitter and emitter.to_stdout):
-            output.write(line_buf)
-            output.flush()
-
-    tool_calls = [tc_accum[i] for i in sorted(tc_accum.keys())]
-    return text_content, tool_calls
-
-
-def _result_summary(name: str, result: str) -> str:
-    """Generate a one-line summary of the tool result."""
-    if result.startswith("<error>"):
-        msg = result.removeprefix("<error>").removesuffix("</error>").strip()
-        return f"ERROR: {msg}"
-    if name == "Bash":
-        lines = result.strip().split("\n")
-        last = lines[-1].strip() if lines else ""
-        if len(lines) > 1:
-            return f"{len(lines)} lines"
-        return last[:80] if last else "(no output)"
-    if name == "Read":
-        return f"{len(result.strip().splitlines())} lines"
-    if name == "Write":
-        return result
-    if name == "Edit":
-        return result
-    if name == "Glob":
-        lines = result.strip().split("\n")
-        if "truncated" in result:
-            return f"{len(lines)} files (truncated)"
-        return f"{len(lines)} files"
-    if name == "Grep":
-        if result.startswith("Found "):
-            return result.split("\n")[0]
-        if result.startswith("No matches"):
-            return "No matches"
-        return f"{len(result.strip().splitlines())} lines"
-    if name == "Skill":
-        if result.startswith("<error>"):
-            msg = result.removeprefix("<error>").removesuffix("</error>").strip()
-            return f"ERROR: {msg}"
-        return f"{len(result.strip().splitlines())} lines"
-    if name == "Agent":
-        return result.split("\n")[0][:100]
-    if name.startswith("mcp__"):
-        if result.startswith("<error>"):
-            msg = result.removeprefix("<error>").removesuffix("</error>").strip()
-            return f"ERROR: {msg}"
-        return result.split("\n")[0][:100]
-    return "ok"
-
-
-def _run_subagent(
-    prompt: str,
-    config_path: str | None = None,
-    verbose: bool = False,
-    preset: str | None = None,
-    no_sandbox: bool = False,
-    max_turns: int = 30,
-    timeout: int = 300,
-) -> str:
-    """Run a sub-agent by spawning letscode as a subprocess."""
-    cmd = [sys.executable, "-m", "letscode", "--max-turns", str(max_turns), "--no-mcp"]
-    if config_path:
-        cmd.extend(["--config", config_path])
-    if verbose:
-        cmd.append("--verbose")
-    if preset:
-        cmd.extend(["--preset", preset])
-    if no_sandbox:
-        cmd.append("--no-sandbox")
-    cmd.append(prompt)
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-        output = result.stdout.strip()
-        if not output:
-            if result.stderr:
-                return f"<error>Sub-agent error:\n{result.stderr[:1000]}</error>"
-            return "(sub-agent completed with no output)"
-        return output
-    except subprocess.TimeoutExpired:
-        return f"<error>Sub-agent timed out ({timeout}s)</error>"
-    except Exception as e:
-        return f"<error>Sub-agent failed: {e}</error>"
-
-
-def _stop_reason(reached_max: bool) -> str:
-    if reached_max:
-        return "max_turn_requests"
-    return "end_turn"
-
-
 async def run_agent(
-    prompt: str,
+    prompt_blocks: list[dict],
+    system_prompt: str,
     config: ModelConfig,
-    config_path: str | None = None,
     max_turns: int | None = None,
-    verbose: bool = False,
-    mcp: Any | None = None,
-    emitter: EventEmitter | None = None,
     feed_path: str | None = None,
-    prompt_blocks: list[dict] | None = None,
+    tool_runner: ToolRunner | None = None,
 ) -> int:
     """Run the agent loop until the LLM stops making tool calls.
 
     Returns exit code: 0 for success, 1 for error.
     """
+    emitter = get_emitter()
+    mcp = get_manager()
+    tools = tool_runner or ToolRunner([], {})
+
+    # --- Setup ---
     client = OpenAI(
         api_key=config.api_key or "dummy",
         base_url=config.base_url,
     )
+    all_tools = tools.definitions
+    tool_names = [t["function"]["name"] for t in all_tools]
 
-    # Merge built-in tools + MCP tools
-    mcp_tools = mcp.get_tool_definitions() if mcp else []
-    all_tools = BUILTIN_TOOL_DEFINITIONS + mcp_tools
-
-    # Build system prompt
-    cwd = os.getcwd()
-    system_prompt = build_system_prompt(config.model)
-
-    # Set security state for tools
-    from .rules import load_rules, merge_rules
-    from .tools._types import set_security
-    user_rules = load_rules(config.rules)
-    rules = merge_rules(config.preset, user_rules)
-    set_security(config.preset, config.sandbox, rules)
-
-    # Load feed history or start fresh
+    # Build messages
+    prompt_text = _blocks_to_text(prompt_blocks)
     if feed_path:
         from .feed import load_feed
-        feed_model, history = load_feed(feed_path)
-        model_for_prompt = feed_model or config.model
-        system_prompt = build_system_prompt(model_for_prompt)
+        _, history = load_feed(feed_path)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ] + history + [
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": prompt_text},
         ]
     else:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": prompt_text},
         ]
-
-    # Collect tool names for init event
-    tool_names = [t["function"]["name"] for t in all_tools]
 
     # Emit init + prompt
     if emitter:
-        from .tools._types import _preset as sec_preset, _sandbox as sec_sandbox, _rules as sec_rules
+        rules = tools.rules
         rules_dict = {
-            "allowRead": sec_rules.allow_read,
-            "denyRead": sec_rules.deny_read,
-            "allowWrite": sec_rules.allow_write,
-            "denyWrite": sec_rules.deny_write,
-            "allowCmd": sec_rules.allow_cmd,
-            "denyCmd": sec_rules.deny_cmd,
+            "allowRead": rules.allow_read,
+            "denyRead": rules.deny_read,
+            "allowWrite": rules.allow_write,
+            "denyWrite": rules.deny_write,
+            "allowCmd": rules.allow_cmd,
+            "denyCmd": rules.deny_cmd,
         }
         emitter.emit_init(
-            model=config.model, cwd=cwd, max_tokens=config.max_tokens,
+            model=config.model, cwd=os.getcwd(), max_tokens=config.max_tokens,
             max_turns=max_turns or 0, preset=config.preset, sandbox=config.sandbox,
             tools=tool_names, rules=rules_dict,
         )
-        emitter.emit_prompt(prompt, prompt_blocks=prompt_blocks)
+        emitter.emit_prompt(prompt_text, prompt_blocks=prompt_blocks)
 
+    # --- Loop ---
     turn = 0
     had_error = False
 
@@ -351,10 +123,12 @@ async def run_agent(
         if emitter:
             emitter.set_turns(turn)
 
+        # 1. LLM call
         try:
-            text_content, tool_calls = _stream_response(
+            on_line = emitter.on_text_line if emitter else None
+            stream_result = consume_stream(
                 client, config.model, messages, config.max_tokens,
-                tools=all_tools, emitter=emitter,
+                tools=all_tools, on_line=on_line,
             )
         except Exception as e:
             print(f"\nAPI error: {e}", file=sys.stderr)
@@ -362,6 +136,9 @@ async def run_agent(
                 emitter.emit_error(str(e), code="api_error", recoverable=False)
             had_error = True
             break
+
+        text_content = stream_result.text_content
+        tool_calls = stream_result.tool_calls
 
         if not tool_calls:
             if not text_content and emitter:
@@ -371,118 +148,67 @@ async def run_agent(
         if text_content and not emitter:
             sys.stdout.write("\n")
 
-        assistant_msg: dict[str, Any] = {
+        # 2. Assistant message
+        messages.append({
             "role": "assistant",
             "content": text_content or None,
             "tool_calls": [
                 {
-                    "id": tc["id"],
+                    "id": tc.id,
                     "type": "function",
                     "function": {
-                        "name": tc["name"],
-                        "arguments": tc["arguments"],
+                        "name": tc.name,
+                        "arguments": tc.arguments,
                     },
                 }
                 for tc in tool_calls
             ],
-        }
-        messages.append(assistant_msg)
+        })
 
+        # 3. Tool execution via ToolRunner
         for tc in tool_calls:
-            tool_name = tc["name"]
-            tool_args = tc["arguments"]
-            tool_id = tc["id"]
+            tool_name = tc.name
+            tool_id = tc.id
+            args = {}
 
-            # Parse arguments
-            try:
-                args = json.loads(tool_args) if tool_args else {}
-            except json.JSONDecodeError as e:
-                if verbose:
-                    print(f"  [JSON parse error for {tool_name}: {e}]", file=sys.stderr)
-                result = f"<error>Invalid JSON arguments for {tool_name}: {e}. Raw: {tool_args[:200]}</error>"
-                if emitter:
-                    emitter.emit_tool_call(tool_id, tool_name, {})
-                    emitter.emit_tool_update(tool_id, "in_progress")
-                    emitter.emit_tool_update(tool_id, "completed", raw_output=result)
-                messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
-                continue
-
-            # Event: tool_call (pending)
             if emitter:
+                import json
+                try:
+                    args = json.loads(tc.arguments) if tc.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+
                 emitter.emit_tool_call(tool_id, tool_name, args)
-
-            if verbose:
-                from .tools import _call_summary
-                print(_call_summary(tool_name, args), file=sys.stderr)
-
-            # Event: tool_call_update (in_progress)
-            if emitter:
                 emitter.emit_tool_update(tool_id, "in_progress")
 
-            # Dispatch: Agent / MCP / built-in
-            tool_success = True
-            if tool_name == "Agent":
-                sub_prompt = args.get("prompt", "")
-                result = _run_subagent(
-                    sub_prompt, config_path=config_path, verbose=verbose,
-                    preset=config.preset, no_sandbox=not config.sandbox,
+            if config.verbose:
+                print(_call_summary(tool_name, args), file=sys.stderr)
+
+            async for event in tools.execute(tool_name, tc.arguments):
+                processed, extras = _process_tool_result(
+                    event.content, tool_id, tool_name, args,
                 )
-                tool_success = not result.startswith("<error>")
-            elif tool_name.startswith("mcp__") and mcp is not None:
-                result = await mcp.call_tool(tool_name, args)
-                tool_success = not result.startswith("<error>")
-            elif tool_name == "Edit":
-                # Enforce read-before-edit
-                fp = args.get("file_path", "")
-                if fp and not _check_file_read(fp):
-                    result = (
-                        f"<error>You must read {fp} with the Read tool before editing it. "
-                        "Read the file first, then retry the edit.</error>"
-                    )
-                    tool_success = False
-                else:
-                    result, _, tool_success = execute_tool(tool_name, tool_args)
-            else:
-                result, _, tool_success = execute_tool(tool_name, tool_args)
 
-            # Track reads for edit validation
-            if tool_name == "Read":
-                fp = args.get("file_path", "")
-                if fp and not result.startswith("<error>"):
-                    _mark_file_read(fp)
+                if config.verbose:
+                    print(f"  <- {tool_name}: {_result_summary(tool_name, event.content)}", file=sys.stderr)
 
-            # Single processing step — produces canonical result for all outputs
-            processed_result, extra_messages = _process_tool_result(
-                result, tool_id, tool_name, args, emitter,
-            )
+                if emitter:
+                    status = "completed" if event.success else "failed"
+                    emitter.emit_tool_update(tool_id, status, raw_output=processed)
+                    for msg in extras:
+                        emitter.emit_user_message_chunk(msg["content"])
 
-            # Generate summary from raw result for display
-            result_summary = _result_summary(tool_name, result)
-            if verbose:
-                print(f"  <- {tool_name}: {result_summary}", file=sys.stderr)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": processed,
+                })
+                for msg in extras:
+                    messages.append(msg)
 
-            # Emit events with processed result
-            if emitter:
-                tc_status = "failed" if not tool_success else "completed"
-                emitter.emit_tool_update(
-                    tool_id, tc_status, raw_output=processed_result,
-                )
-                for msg in extra_messages:
-                    emitter.emit_user_message_chunk(msg["content"])
-
-            # Append to messages with same processed result
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": processed_result,
-            })
-            for msg in extra_messages:
-                messages.append(msg)
-
-    # Emit session end
+    # --- Session end ---
     if emitter:
-        emitter.emit_result(_stop_reason(
-            reached_max=(max_turns is not None and turn >= max_turns),
-        ))
+        stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
+        emitter.on_session_end(stop_reason)
 
     return 1 if had_error else 0

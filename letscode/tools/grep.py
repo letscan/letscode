@@ -4,8 +4,6 @@ import shutil
 import subprocess
 from typing import Any
 
-from ._types import get_cwd, check_read_allowed
-
 SCHEMA = {
     "type": "function",
     "function": {
@@ -105,9 +103,11 @@ _TYPE_MAP = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], *, validate_path=None, **_) -> str:
+    import os
+
     pattern = args.get("pattern", "")
-    search_path = args.get("path") or get_cwd()
+    search_path = args.get("path") or os.getcwd()
     glob_filter = args.get("glob")
     output_mode = args.get("output_mode", "files_with_matches")
     context_after = args.get("-A") or args.get("-C")
@@ -118,32 +118,33 @@ def execute(args: dict[str, Any]) -> str:
     offset = args.get("offset", 0)
     multiline = args.get("multiline", False)
 
-    if err := check_read_allowed(search_path):
-        return err
+    if validate_path:
+        if err := validate_path("read", search_path):
+            return err
 
     if shutil.which("rg") is not None:
         return _search_rg(
             pattern, search_path, glob_filter, output_mode,
             context_before, context_after, case_insensitive,
-            file_type, head_limit, offset, multiline,
+            file_type, head_limit, offset, multiline, validate_path,
         )
     return _search_grep(
         pattern, search_path, glob_filter, output_mode,
         context_before, context_after, case_insensitive,
-        file_type, head_limit, offset, multiline,
+        file_type, head_limit, offset, multiline, validate_path,
     )
 
 
-def _filter_denied(lines: list[str]) -> list[str]:
+def _filter_denied(lines: list[str], validate_path=None) -> list[str]:
     """Remove lines from files that are denied by read rules."""
-    from ._types import check_read_allowed
+    if not validate_path:
+        return lines
     allowed_cache: dict[str, bool] = {}
     result = []
     for line in lines:
-        # Extract file path: first colon-separated field (rg/grep output)
         file_path = line.split(":")[0] if ":" in line else line
         if file_path not in allowed_cache:
-            allowed_cache[file_path] = check_read_allowed(file_path) is None
+            allowed_cache[file_path] = validate_path("read", file_path) is None
         if allowed_cache[file_path]:
             result.append(line)
     return result
@@ -202,6 +203,7 @@ def _search_rg(
     output_mode: str, context_before: int | None, context_after: int | None,
     case_insensitive: bool, file_type: str | None,
     head_limit: int | None, offset: int | None, multiline: bool,
+    validate_path=None,
 ) -> str:
     cmd = ["rg"]
     if output_mode == "files_with_matches":
@@ -230,7 +232,7 @@ def _search_rg(
         if not output:
             return "No matches found."
         lines = output.split("\n")
-        lines = _filter_denied(lines)
+        lines = _filter_denied(lines, validate_path)
         if not lines:
             return "No matches found."
         return _format_output(lines, output_mode, head_limit, offset)
@@ -245,6 +247,7 @@ def _search_grep(
     output_mode: str, context_before: int | None, context_after: int | None,
     case_insensitive: bool, file_type: str | None,
     head_limit: int | None, offset: int | None, multiline: bool,
+    validate_path=None,
 ) -> str:
     """Fallback using system grep when ripgrep is not available."""
     if multiline:
@@ -280,7 +283,7 @@ def _search_grep(
         if not output:
             return "No matches found."
         lines = output.split("\n")
-        lines = _filter_denied(lines)
+        lines = _filter_denied(lines, validate_path)
         if not lines:
             return "No matches found."
         return _format_output(lines, output_mode, head_limit, offset)

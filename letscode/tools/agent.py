@@ -1,5 +1,7 @@
 """Agent tool — spawn letscode itself as a subprocess for sub-agent tasks."""
 
+import subprocess
+import sys
 from typing import Any
 
 SCHEMA = {
@@ -53,6 +55,46 @@ SCHEMA = {
 }
 
 
-def execute(args: dict[str, Any]) -> str:
-    """Execute is a stub — actual execution happens in agent.py via subprocess."""
-    return "<error>Agent tool must be called through the agent loop</error>"
+def execute(
+    args: dict[str, Any],
+    *,
+    config_path: str | None = None,
+    preset: str = "default",
+    sandbox: bool = True,
+    verbose: bool = False,
+    **_,
+) -> str:
+    """Spawn letscode as a subprocess for sub-agent delegation."""
+    prompt = args.get("prompt", "")
+    max_turns = 30
+    timeout = 300
+
+    cmd = [sys.executable, "-m", "letscode", "--max-turns", str(max_turns), "--no-mcp"]
+    if config_path:
+        cmd.extend(["--config", config_path])
+    if verbose:
+        cmd.append("--verbose")
+    if preset:
+        cmd.extend(["--preset", preset])
+    if not sandbox:
+        cmd.append("--no-sandbox")
+    cmd.append(prompt)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+        output = result.stdout.strip()
+        if not output:
+            if result.stderr:
+                return f"<error>Sub-agent error:\n{result.stderr[:1000]}</error>"
+            return "(sub-agent completed with no output)"
+        return output
+    except subprocess.TimeoutExpired:
+        return f"<error>Sub-agent timed out ({timeout}s)</error>"
+    except Exception as e:
+        return f"<error>Sub-agent failed: {e}</error>"

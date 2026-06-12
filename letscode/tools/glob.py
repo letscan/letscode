@@ -5,8 +5,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ._types import get_cwd, check_read_allowed
-
 SCHEMA = {
     "type": "function",
     "function": {
@@ -41,13 +39,16 @@ SCHEMA = {
 MAX_RESULTS = 1000
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], *, validate_path=None, **_) -> str:
+    import os
+
     pattern = args.get("pattern", "")
-    search_path = args.get("path") or get_cwd()
+    search_path = args.get("path") or os.getcwd()
 
     try:
-        if err := check_read_allowed(search_path):
-            return err
+        if validate_path:
+            if err := validate_path("read", search_path):
+                return err
 
         base = Path(search_path).expanduser().resolve()
         if not base.is_dir():
@@ -64,7 +65,7 @@ def execute(args: dict[str, Any]) -> str:
 
         lines = []
         for f in files:
-            if check_read_allowed(str(f)) is not None:
+            if validate_path and validate_path("read", str(f)) is not None:
                 continue
             try:
                 lines.append(str(f.relative_to(base)))
