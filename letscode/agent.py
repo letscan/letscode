@@ -11,7 +11,7 @@ from .events import get_emitter, RESULT_THRESHOLD
 from .mcp import get_manager
 from .stream import consume_stream
 from .tools import TOOL_DEFINITIONS, _call_summary, _result_summary
-from .tools.runner import ToolRunner
+from .tools.runner import ToolRunner, ToolOutput
 from .tools._types import ToolResult
 
 
@@ -185,6 +185,12 @@ async def run_agent(
                 print(_call_summary(tool_name, args), file=sys.stderr)
 
             async for event in tools.execute(tool_name, tc.arguments):
+                if isinstance(event, ToolOutput):
+                    if emitter:
+                        emitter.emit_tool_update(tool_id, "streaming", raw_output=event.content)
+                    continue
+
+                # ToolResult — final output
                 processed, extras = _process_tool_result(
                     event.content, tool_id, tool_name, args,
                 )

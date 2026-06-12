@@ -1,11 +1,46 @@
-"""Bash tool — shell command execution."""
+"""Bash tool — shell command execution with streaming output."""
 
+import asyncio
 import os
+import pty
 import shutil
-import subprocess
+import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from ._types import ToolResult
+from .runner import ToolOutput
+
+
+async def _read_records(stream: asyncio.StreamReader) -> AsyncGenerator[str, None]:
+    """Read from a stream, yielding records split on \\r or \\n."""
+    buf = b""
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            if buf:
+                text = buf.decode(errors="replace").strip()
+                if text:
+                    yield text
+            return
+        buf += chunk
+        while True:
+            cr = buf.find(b"\r")
+            nl = buf.find(b"\n")
+            if cr < 0 and nl < 0:
+                break
+            if cr < 0:
+                pos = nl
+            elif nl < 0:
+                pos = cr
+            else:
+                pos = min(cr, nl)
+            record = buf[:pos].decode(errors="replace")
+            buf = buf[pos + 1:]
+            if buf.startswith(b"\n"):
+                buf = buf[1:]
+            if record:
+                yield record
 
 SCHEMA = {
     "type": "function",
@@ -76,7 +111,9 @@ SCHEMA = {
 }
 
 
-def execute(args: dict[str, Any], *, preset: str = "default", sandbox: bool = True, **_) -> str | ToolResult:
+async def execute(
+    args: dict[str, Any], *, preset: str = "default", sandbox: bool = True, **_,
+) -> AsyncGenerator[ToolOutput | ToolResult, None]:
     command = args.get("command", "")
     timeout_ms = args.get("timeout")
     timeout = min(timeout_ms / 1000, 1800) if timeout_ms else 120
@@ -90,25 +127,51 @@ def execute(args: dict[str, Any], *, preset: str = "default", sandbox: bool = Tr
         cmd = wrap_command(cmd, cwd, preset)
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        # PTY forces line-buffered output from the subprocess,
+        # so progress bars and interactive output stream in real time.
+        master_fd, slave_fd = pty.openpty()
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=slave_fd,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
-        parts: list[str] = []
-        if result.stdout:
-            parts.append(result.stdout.rstrip("\n"))
-        if result.stderr:
-            parts.append(result.stderr.rstrip("\n"))
+        os.close(slave_fd)
+
+        loop = asyncio.get_event_loop()
+        reader = asyncio.StreamReader()
+        transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader),
+            os.fdopen(master_fd, "rb"),
+        )
+
+        lines: list[str] = []
+        start = time.monotonic()
+
+        async for record in _read_records(reader):
+            if time.monotonic() - start > timeout:
+                proc.kill()
+                transport.close()
+                yield ToolResult(content=f"Command timed out after {timeout}s", success=False)
+                return
+            lines.append(record)
+            yield ToolOutput(content=record)
+
+        await proc.wait()
+        transport.close()
+        stderr_data = await proc.stderr.read()
+        stderr_text = stderr_data.decode(errors="replace").rstrip("\n") if stderr_data else ""
+
+        parts = list(lines)
+        if stderr_text:
+            parts.append(stderr_text)
         output = "\n".join(parts) if parts else "(no output)"
 
-        success = result.returncode == 0
+        success = proc.returncode == 0
         if not success:
-            output += f"\n\n[Exit code: {result.returncode}]"
-        return ToolResult(content=output, success=success)
-    except subprocess.TimeoutExpired:
-        return ToolResult(content=f"Command timed out after {timeout}s", success=False)
+            output += f"\n\n[Exit code: {proc.returncode}]"
+
+        yield ToolResult(content=output, success=success)
+
     except Exception as e:
-        return ToolResult(content=str(e), success=False)
+        yield ToolResult(content=str(e), success=False)

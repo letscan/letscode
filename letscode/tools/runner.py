@@ -1,7 +1,9 @@
 """ToolRunner — tool dispatch with security guardrails."""
 
+import inspect
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,6 +12,12 @@ from ._types import ToolResult
 
 ValidatePath = Callable[[str, str], str | None]
 IsFileRead = Callable[[str], bool]
+
+
+@dataclass
+class ToolOutput:
+    """Streaming chunk from a tool execution."""
+    content: str
 
 
 class ToolRunner:
@@ -72,7 +80,7 @@ class ToolRunner:
 
     async def execute(
         self, name: str, arguments: str,
-    ) -> AsyncGenerator[ToolResult, None]:
+    ) -> AsyncGenerator[ToolOutput | ToolResult, None]:
         # 1. Parse arguments
         try:
             args = json.loads(arguments) if arguments else {}
@@ -123,7 +131,10 @@ class ToolRunner:
 
         result = executor(args, **kwargs)
 
-        if isinstance(result, ToolResult):
+        if inspect.isasyncgen(result):
+            async for event in result:
+                yield event
+        elif isinstance(result, ToolResult):
             yield result
         else:
             yield ToolResult(content=str(result), success=True)

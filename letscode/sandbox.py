@@ -19,6 +19,8 @@ _SYSTEM_READ = """\
 (allow file-read* (subpath "/var"))
 (allow file-read* (subpath "/private/tmp"))
 (allow file-read* (subpath "/private/var"))
+(allow file-read* (subpath "/opt"))
+(allow file-read* (subpath "/Library"))
 (allow file-read-metadata)"""
 
 _SECRETS_DENY_READ = """\
