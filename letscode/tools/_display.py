@@ -100,6 +100,12 @@ def _status(success: bool) -> str:
     return _sym(_CROSS, _ASCII_CROSS) + " "
 
 
+def format_stream_line(text: str) -> str:
+    """Format a single streaming output line (dim │ prefix)."""
+    bar = _sym(_BAR, _ASCII_BAR)
+    return _dim(f"  {bar} {text}")
+
+
 # ---------------------------------------------------------------------------
 # Call formatters
 # ---------------------------------------------------------------------------
@@ -261,7 +267,7 @@ def _result_read(result: str, success: bool, args: dict) -> str:
     return header + "\n" + "\n".join(preview)
 
 
-def _result_write(result: str, success: bool, args: dict) -> str:
+def _result_write(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
 
@@ -275,7 +281,7 @@ def _result_write(result: str, success: bool, args: dict) -> str:
     return header + "\n" + "\n".join(preview_lines)
 
 
-def _result_edit(result: str, success: bool, args: dict) -> str:
+def _result_edit(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
 
@@ -307,7 +313,7 @@ def _result_edit(result: str, success: bool, args: dict) -> str:
     return header + "\n" + "\n".join(diff_parts)
 
 
-def _result_glob(result: str, success: bool, args: dict) -> str:
+def _result_glob(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
 
@@ -325,7 +331,7 @@ def _result_glob(result: str, success: bool, args: dict) -> str:
     return header + "\n" + "\n".join(preview)
 
 
-def _result_grep(result: str, success: bool, args: dict) -> str:
+def _result_grep(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
 
@@ -344,14 +350,14 @@ def _result_grep(result: str, success: bool, args: dict) -> str:
     return f"{_status(True)}{len(lines)} lines"
 
 
-def _result_skill(result: str, success: bool, args: dict) -> str:
+def _result_skill(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
     name = args.get("skill", "")
     return f"{_status(True)}launched  {name}"
 
 
-def _result_agent(result: str, success: bool, args: dict) -> str:
+def _result_agent(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
     return f"{_status(True)}completed"

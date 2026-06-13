@@ -8,11 +8,18 @@ from pathlib import Path
 
 from .agent import run_agent
 from .config import load_config, list_models
-from .events import EventEmitter, set_emitter
+from .events import (
+    EventHub,
+    FeedOutputSubscriber,
+    LogSubscriber,
+    StreamSubscriber,
+    set_hub,
+)
 from .mcp import McpManager
 from .mcp.client import set_manager
 from .prompt import build_system_prompt
 from .rules import load_rules, merge_rules
+from .subscribers import CliOutputSubscriber, MessageSubscriber
 from .tools import TOOL_DEFINITIONS, EXECUTORS
 from .tools.runner import ToolRunner
 
@@ -44,12 +51,48 @@ async def _async_main(args):
         else:
             prompt_blocks = [{"type": "text", "text": args.prompt}]
 
-        # Initialize event emitter
+        # --feed X --append is sugar for --feed X --output X --event-stream
+        if args.append and args.feed and not args.output:
+            args.output = args.feed
+            args.event_stream = True
+
+        # Initialize EventHub
+        hub = EventHub()
+        set_hub(hub)
+
+        # LogSubscriber: always-on 1:1 raw event log
         log_dir = Path(os.getcwd()) / ".letscode" / "logs"
-        append_path = args.feed if (args.append and args.feed) else None
-        emitter = EventEmitter(log_dir, to_stdout=args.event_stream,
-                               append_path=append_path)
-        set_emitter(emitter)
+        log_sub = LogSubscriber(log_dir)
+        hub.subscribe(log_sub)
+
+        # MessageSubscriber: always-on, builds messages list.
+        # log_stem drives large-result persistence: prefer the --output feed
+        # path (so persisted refs align with the replayable file), fall back
+        # to the internal log path.
+        if args.output and args.event_stream:
+            msg_log_stem = Path(args.output)
+        else:
+            msg_log_stem = log_sub.log_path
+        msg_sub = MessageSubscriber(log_stem=msg_log_stem)
+        hub.subscribe(msg_sub)
+
+        # Real-time output: StreamSubscriber (event-stream) or CliOutputSubscriber
+        if args.event_stream:
+            hub.subscribe(StreamSubscriber())
+        else:
+            hub.subscribe(CliOutputSubscriber(verbose=args.verbose))
+
+        # FeedOutputSubscriber: --output writes consolidated agent output
+        if args.output:
+            if args.event_stream:
+                feed_mode = "json"
+            elif args.verbose:
+                feed_mode = "verbose"
+            else:
+                feed_mode = "text"
+            hub.subscribe(FeedOutputSubscriber(
+                path=args.output, mode=feed_mode,
+            ))
 
         # Initialize MCP
         mcp = McpManager()
@@ -94,15 +137,16 @@ async def _async_main(args):
                 max_turns=args.max_turns,
                 feed_path=args.feed,
                 tool_runner=tool_runner,
+                msg_sub=msg_sub,
             )
             if not args.event_stream:
                 print()  # final newline
             return rc
         finally:
             await mcp.disconnect_all()
-            emitter.close()
+            hub.close()
             set_manager(None)
-            set_emitter(None)
+            set_hub(None)
     finally:
         os.chdir(original_cwd)
 
@@ -169,8 +213,14 @@ def main():
         default=None,
     )
     parser.add_argument(
+        "--output",
+        help="Write consolidated agent output to a file. Format depends on mode: "
+             "text (default), verbose (with -v), or JSONL feed (with --event-stream)",
+        default=None,
+    )
+    parser.add_argument(
         "--append",
-        help="Append events to the --feed log file instead of creating a new one",
+        help="Sugar: --feed X --append expands to --feed X --output X --event-stream",
         action="store_true",
         default=False,
     )

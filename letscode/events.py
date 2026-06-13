@@ -1,86 +1,113 @@
-"""Event stream emitter — writes JSONL events to log file and optionally stdout."""
+"""EventHub — internal event bus with pluggable subscribers."""
 
 import json
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Callable
 
 from . import __version__
-
-# Tool results larger than this are persisted to disk
-RESULT_THRESHOLD = 32 * 1024  # 32KB
+from .subscribers import RESULT_THRESHOLD
+from .tools._display import format_call, format_result
 
 
 # ---------------------------------------------------------------------------
-# Global emitter singleton
+# Shared persistence helpers
 # ---------------------------------------------------------------------------
 
-_emitter: "EventEmitter | None" = None
+def _write_result_file(log_path: Path, tool_call_id: str, result: str) -> Path:
+    results_dir = log_path.parent / (log_path.stem + "_results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    result_path = results_dir / f"{tool_call_id}.txt"
+    result_path.write_text(result, encoding="utf-8")
+    return result_path
 
 
-def set_emitter(e: "EventEmitter | None") -> None:
-    """Register the global event emitter for this session."""
-    global _emitter
-    _emitter = e
+def _make_persisted_ref(result: str, result_path: Path) -> str:
+    preview_limit = 2000
+    if len(result) > preview_limit:
+        truncated = result[:preview_limit]
+        last_nl = truncated.rfind("\n")
+        cut = last_nl if last_nl > preview_limit // 2 else preview_limit
+        preview = result[:cut]
+    else:
+        preview = result
+    size_kb = len(result) / 1024
+    return (
+        f"<persisted-output>\n"
+        f"Output too large ({size_kb:.1f} KB). "
+        f"Full output saved to: {result_path}\n\n"
+        f"Preview:\n{preview}\n"
+        f"{'...' if len(result) > preview_limit else ''}\n"
+        f"</persisted-output>"
+    )
 
 
-def get_emitter() -> "EventEmitter | None":
-    """Return the current session's event emitter, if any."""
-    return _emitter
-
+# ---------------------------------------------------------------------------
+# Timestamp helper
+# ---------------------------------------------------------------------------
 
 def _now() -> str:
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
-class EventEmitter:
-    """Emits JSONL events to a log file and optionally to stdout."""
+# ---------------------------------------------------------------------------
+# Global hub singleton
+# ---------------------------------------------------------------------------
 
-    def __init__(self, log_dir: Path, to_stdout: bool = False,
-                 append_path: str | None = None):
-        self.to_stdout = to_stdout
+_hub: "EventHub | None" = None
+
+
+def set_hub(h: "EventHub | None") -> None:
+    global _hub
+    _hub = h
+
+
+def get_hub() -> "EventHub | None":
+    return _hub
+
+
+# ---------------------------------------------------------------------------
+# EventHub
+# ---------------------------------------------------------------------------
+
+class EventHub:
+    """Internal event bus. All producers emit events; subscribers consume them."""
+
+    def __init__(self):
+        self._subscribers: list[Callable[[str, dict], None]] = []
         self._start_time: float | None = None
         self._turns = 0
         self._tool_calls = 0
-        self._log_path: Path | None = None
-        self._log_file: Any = None
 
-        if append_path:
-            self._log_path = Path(append_path)
-            self._log_file = open(self._log_path, "a", encoding="utf-8")
-        else:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            now = datetime.now()
-            short_id = uuid.uuid4().hex[:4]
-            filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}.jsonl"
-            self._log_path = log_dir / filename
-            self._log_file = open(self._log_path, "w", encoding="utf-8")
+    def subscribe(self, handler: Callable[[str, dict], None]) -> None:
+        self._subscribers.append(handler)
+
+    def emit(self, event_type: str, data: dict) -> None:
+        for handler in self._subscribers:
+            handler(event_type, data)
+
+    def close(self) -> None:
+        for handler in self._subscribers:
+            close_fn = getattr(handler, "close", None)
+            if close_fn:
+                close_fn()
 
     def set_turns(self, turns: int) -> None:
         self._turns = turns
 
-    def emit(self, type_: str, data: dict) -> None:
-        event = {
-            "type": type_,
-            "timestamp": _now(),
-            "data": data,
-        }
-        line = json.dumps(event, ensure_ascii=False)
-        self._log_file.write(line + "\n")
-        self._log_file.flush()
-        if self.to_stdout:
-            sys.stdout.write(line + "\n")
-            sys.stdout.flush()
+    # ------------------------------------------------------------------
+    # Convenience methods (high-level API used by agent.py)
+    # ------------------------------------------------------------------
 
     def emit_init(self, *, model: str, cwd: str, max_tokens: int,
                   max_turns: int, preset: str, sandbox: bool,
                   tools: list[str], mcp_servers: dict | None = None,
                   skills: list[str] | None = None,
                   rules: dict | None = None) -> None:
-        import time
         self._start_time = time.monotonic()
         data: dict = {
             "agent": "letscode",
@@ -101,8 +128,8 @@ class EventEmitter:
             data["rules"] = rules
         self.emit("init", data)
 
-    def emit_prompt(self, prompt: str,
-                    prompt_blocks: list[dict] | None = None) -> None:
+    def emit_prompt(self, prompt_blocks: list[dict] | None = None,
+                    prompt: str = "") -> None:
         self.emit("prompt", prompt_blocks if prompt_blocks else [{"type": "text", "text": prompt}])
 
     def emit_agent_message_chunk(self, text: str) -> None:
@@ -119,29 +146,16 @@ class EventEmitter:
             "rawInput": args,
         })
 
-    def _write_result_file(self, tool_call_id: str, result: str) -> Path:
-        """Write a large result to a separate file. Returns the file path."""
-        results_dir = self._log_path.parent / (self._log_path.stem + "_results")
-        results_dir.mkdir(parents=True, exist_ok=True)
-        result_path = results_dir / f"{tool_call_id}.txt"
-        result_path.write_text(result, encoding="utf-8")
-        return result_path
-
-    def emit_tool_update(self, tool_call_id: str, status: str,
+    def emit_tool_update(self, tool_call_id: str, status: str | None = None,
                          raw_output: str | None = None) -> None:
-        data: dict = {
-            "toolCallId": tool_call_id,
-            "status": status,
-        }
+        data: dict = {"toolCallId": tool_call_id}
+        if status is not None:
+            data["status"] = status
         if raw_output is not None:
             data["rawOutput"] = raw_output
         self.emit("tool_call_update", data)
 
     def emit_user_message_chunk(self, content: str) -> None:
-        """Emit a synthetic user message event (e.g., expanded skill prompt).
-
-        Only written to log for feed reconstruction. Not translated to ACP.
-        """
         self.emit("user_message_chunk", {
             "type": "text",
             "text": content,
@@ -156,7 +170,6 @@ class EventEmitter:
         })
 
     def emit_result(self, stop_reason: str) -> None:
-        import time
         data: dict = {
             "stopReason": stop_reason,
             "turns": self._turns,
@@ -167,44 +180,187 @@ class EventEmitter:
         self.emit("result", data)
         self.close()
 
+    def on_text_line(self, text: str) -> None:
+        """Emit agent_message_chunk event."""
+        self.emit_agent_message_chunk(text)
+
+    def on_session_end(self, stop_reason: str) -> None:
+        self.emit_result(stop_reason)
+
+
+# ---------------------------------------------------------------------------
+# LogSubscriber — 1:1 raw event log (always registered)
+# ---------------------------------------------------------------------------
+
+class LogSubscriber:
+    """Writes every event verbatim to .letscode/logs/*.jsonl.
+
+    Always registered. Records the in-memory event stream 1:1, including
+    per-line process-output events, for debugging and audit. Does NOT
+    collapse or transform events.
+    """
+
+    def __init__(self, log_dir: Path):
+        log_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        short_id = uuid.uuid4().hex[:4]
+        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}.jsonl"
+        self._log_path = log_dir / filename
+        self._log_file = open(self._log_path, "w", encoding="utf-8")
+
+    @property
+    def log_path(self) -> Path:
+        return self._log_path
+
+    def __call__(self, event_type: str, data: dict) -> None:
+        event = {
+            "type": event_type,
+            "timestamp": _now(),
+            "data": data,
+        }
+        line = json.dumps(event, ensure_ascii=False)
+        self._log_file.write(line + "\n")
+        self._log_file.flush()
+
+    def log_debug(self, message: str) -> None:
+        """Write a debug line that is not emitted as an event."""
+        event = {
+            "type": "debug",
+            "timestamp": _now(),
+            "data": {"message": message},
+        }
+        line = json.dumps(event, ensure_ascii=False)
+        self._log_file.write(line + "\n")
+        self._log_file.flush()
+
     def close(self) -> None:
         if self._log_file and not self._log_file.closed:
             self._log_file.close()
 
-    # ------------------------------------------------------------------
-    # High-level convenience methods
-    # ------------------------------------------------------------------
 
-    def on_text_line(self, text: str) -> None:
-        """Emit agent_message_chunk + write plain text to stdout if not event-stream mode."""
-        self.emit_agent_message_chunk(text)
-        if not self.to_stdout:
-            sys.stdout.write(text + "\n")
-            sys.stdout.flush()
+# ---------------------------------------------------------------------------
+# FeedOutputSubscriber — consolidated output for replay/sharing (--output)
+# ---------------------------------------------------------------------------
 
-    def persist_result(self, result: str, tool_id: str) -> str:
-        """Persist a large tool result to disk. Returns the reference message."""
-        result_path = self._write_result_file(tool_id, result)
+class FeedOutputSubscriber:
+    """Writes consolidated agent output to a file (--output flag).
 
-        preview_limit = 2000
-        if len(result) > preview_limit:
-            truncated = result[:preview_limit]
-            last_nl = truncated.rfind("\n")
-            cut = last_nl if last_nl > preview_limit // 2 else preview_limit
-            preview = result[:cut]
+    Mode determines format:
+      - "json": structured JSONL feed (process output merged into final
+                tool_call_update; large results persisted). Compatible with
+                --feed replay.
+      - "verbose": human-readable text + consolidated tool call/result lines.
+      - "text": human-readable text only (LLM responses).
+
+    In all modes, per-line process-output events are accumulated in memory
+    and merged into the final completed/failed event, so the file never
+    contains transient streaming chunks.
+    """
+
+    def __init__(self, path: str, mode: str):
+        self._mode = mode
+        self._stream_parts: dict[str, list[str]] = {}
+        self._tool_info: dict[str, dict] = {}  # tid -> {name, args}
+        self._log_path = Path(path)
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Always append: lets --output be reused across multi-turn runs
+        self._file = open(self._log_path, "a", encoding="utf-8")
+
+    def __call__(self, event_type: str, data: dict) -> None:
+        # Accumulate process-output chunks; merge on final event
+        if event_type == "tool_call_update":
+            tid = data.get("toolCallId", "")
+            status = data.get("status")
+            if not status:
+                chunk = data.get("rawOutput", "")
+                if chunk:
+                    self._stream_parts.setdefault(tid, []).append(chunk)
+                return
+            parts = self._stream_parts.pop(tid, [])
+            if parts and "rawOutput" not in data:
+                data = dict(data)
+                data["rawOutput"] = "\n".join(parts)
+            if self._mode == "json":
+                data = self._maybe_persist(data)
+
+        if self._mode == "json":
+            self._write_json(event_type, data)
+        elif self._mode == "verbose":
+            self._write_verbose(event_type, data)
         else:
-            preview = result
+            self._write_text(event_type, data)
 
-        size_kb = len(result) / 1024
-        return (
-            f"<persisted-output>\n"
-            f"Output too large ({size_kb:.1f} KB). "
-            f"Full output saved to: {result_path}\n\n"
-            f"Preview:\n{preview}\n"
-            f"{'...' if len(result) > preview_limit else ''}\n"
-            f"</persisted-output>"
-        )
+    # -- mode writers --
 
-    def on_session_end(self, stop_reason: str) -> None:
-        """Emit the session result event (end_turn)."""
-        self.emit_result(stop_reason)
+    def _write_json(self, event_type: str, data: dict) -> None:
+        event = {"type": event_type, "timestamp": _now(), "data": data}
+        self._file.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._file.flush()
+
+    def _write_text(self, event_type: str, data: dict) -> None:
+        if event_type != "agent_message_chunk":
+            return
+        text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
+        if text:
+            self._file.write(text + "\n")
+            self._file.flush()
+
+    def _write_verbose(self, event_type: str, data: dict) -> None:
+        if event_type == "agent_message_chunk":
+            text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
+            if text:
+                self._file.write(text + "\n")
+                self._file.flush()
+        elif event_type == "tool_call":
+            tid = data.get("toolCallId", "")
+            name = data.get("toolName", "")
+            args = data.get("rawInput", {})
+            self._tool_info[tid] = {"name": name, "args": args}
+            self._file.write(format_call(name, args) + "\n")
+        elif event_type == "tool_call_update":
+            status = data.get("status")
+            if status in ("completed", "failed"):
+                tid = data.get("toolCallId", "")
+                info = self._tool_info.get(tid, {})
+                name = info.get("name", "")
+                args = info.get("args", {})
+                result = data.get("rawOutput", "")
+                success = status == "completed"
+                self._file.write(format_result(name, result, success, args) + "\n")
+                self._file.flush()
+
+    # -- helpers --
+
+    def _maybe_persist(self, data: dict) -> dict:
+        raw = data.get("rawOutput")
+        if raw and len(raw) > RESULT_THRESHOLD:
+            result_path = _write_result_file(self._log_path, data["toolCallId"], raw)
+            data = dict(data)
+            data["rawOutput"] = _make_persisted_ref(raw, result_path)
+        return data
+
+    def close(self) -> None:
+        if self._file and not self._file.closed:
+            self._file.close()
+
+
+# ---------------------------------------------------------------------------
+# StreamSubscriber — real-time JSONL to stdout (--event-stream mode)
+# ---------------------------------------------------------------------------
+
+class StreamSubscriber:
+    """Writes JSONL events to stdout (--event-stream mode).
+
+    Emits every event in real time, including per-line process output,
+    for live consumers (e.g. ACP server).
+    """
+
+    def __call__(self, event_type: str, data: dict) -> None:
+        event = {
+            "type": event_type,
+            "timestamp": _now(),
+            "data": data,
+        }
+        line = json.dumps(event, ensure_ascii=False)
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()

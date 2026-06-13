@@ -1,55 +1,17 @@
 """Agent loop — LLM call → tool execution → result feedback cycle."""
 
+import json
 import os
 import sys
-from typing import Any
 
 from openai import OpenAI
 
 from .config import ModelConfig
-from .events import get_emitter, RESULT_THRESHOLD
+from .events import get_hub
 from .mcp import get_manager
 from .stream import consume_stream
-from .tools import TOOL_DEFINITIONS, _call_summary, _result_summary
-from .tools.runner import ToolRunner, ToolOutput
-from .tools._types import ToolResult
-
-
-def _blocks_to_text(blocks: list[dict]) -> str:
-    """Convert structured content blocks to plain text for the LLM."""
-    parts: list[str] = []
-    for b in blocks:
-        t = b.get("type")
-        if t == "text":
-            parts.append(b.get("text", ""))
-        elif t == "resource_link":
-            name = b.get("name", "")
-            uri = b.get("uri", "")
-            parts.append(f"[@{name}]({uri})" if name else uri)
-        elif t == "resource":
-            text = b.get("resource", {}).get("text")
-            parts.append(text if text else b.get("resource", {}).get("uri", ""))
-        elif t == "image":
-            parts.append(f"[image:{b.get('mime_type')}]")
-    return "\n".join(parts)
-
-
-def _process_tool_result(
-    result: str, tool_id: str, tool_name: str, args: dict,
-) -> tuple[str, list[dict]]:
-    """Post-process a raw tool result: persist if large, expand if skill."""
-    emitter = get_emitter()
-    extra_messages: list[dict] = []
-
-    if len(result) > RESULT_THRESHOLD and emitter:
-        result = emitter.persist_result(result, tool_id)
-
-    if tool_name == "Skill" and not result.startswith("<error>"):
-        skill_name = args.get("skill", "")
-        extra_messages.append({"role": "user", "content": result})
-        result = f"Launching skill: {skill_name}"
-
-    return result, extra_messages
+from .subscribers import MessageSubscriber
+from .tools.runner import ToolRunner, ToolOutput, ToolResult
 
 
 async def run_agent(
@@ -59,13 +21,13 @@ async def run_agent(
     max_turns: int | None = None,
     feed_path: str | None = None,
     tool_runner: ToolRunner | None = None,
+    msg_sub: MessageSubscriber | None = None,
 ) -> int:
     """Run the agent loop until the LLM stops making tool calls.
 
     Returns exit code: 0 for success, 1 for error.
     """
-    emitter = get_emitter()
-    mcp = get_manager()
+    hub = get_hub()
     tools = tool_runner or ToolRunner([], {})
 
     # --- Setup ---
@@ -76,24 +38,18 @@ async def run_agent(
     all_tools = tools.definitions
     tool_names = [t["function"]["name"] for t in all_tools]
 
-    # Build messages
-    prompt_text = _blocks_to_text(prompt_blocks)
-    if feed_path:
-        from .feed import load_feed
-        _, history = load_feed(feed_path)
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-        ] + history + [
-            {"role": "user", "content": prompt_text},
-        ]
-    else:
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_text},
-        ]
+    if msg_sub is None:
+        msg_sub = MessageSubscriber()
 
-    # Emit init + prompt
-    if emitter:
+    # Replay feed history into msg_sub (if provided)
+    if feed_path:
+        from .feed_util import read_events
+        for ev in read_events(feed_path):
+            msg_sub(ev["type"], ev["data"])
+        msg_sub.flush()
+
+    # Emit init + prompt (msg_sub will append the user message)
+    if hub:
         rules = tools.rules
         rules_dict = {
             "allowRead": rules.allow_read,
@@ -103,12 +59,12 @@ async def run_agent(
             "allowCmd": rules.allow_cmd,
             "denyCmd": rules.deny_cmd,
         }
-        emitter.emit_init(
+        hub.emit_init(
             model=config.model, cwd=os.getcwd(), max_tokens=config.max_tokens,
             max_turns=max_turns or 0, preset=config.preset, sandbox=config.sandbox,
             tools=tool_names, rules=rules_dict,
         )
-        emitter.emit_prompt(prompt_text, prompt_blocks=prompt_blocks)
+        hub.emit_prompt(prompt_blocks=prompt_blocks)
 
     # --- Loop ---
     turn = 0
@@ -120,20 +76,23 @@ async def run_agent(
             break
 
         turn += 1
-        if emitter:
-            emitter.set_turns(turn)
+        if hub:
+            hub.set_turns(turn)
 
-        # 1. LLM call
+        # Build messages: system prompt + msg_sub's reconstructed history
+        messages = [{"role": "system", "content": system_prompt}] + msg_sub.messages
+
+        # LLM call
         try:
-            on_line = emitter.on_text_line if emitter else None
+            on_line = hub.on_text_line if hub else None
             stream_result = consume_stream(
                 client, config.model, messages, config.max_tokens,
                 tools=all_tools, on_line=on_line,
             )
         except Exception as e:
             print(f"\nAPI error: {e}", file=sys.stderr)
-            if emitter:
-                emitter.emit_error(str(e), code="api_error", recoverable=False)
+            if hub:
+                hub.emit_error(str(e), code="api_error", recoverable=False)
             had_error = True
             break
 
@@ -141,80 +100,66 @@ async def run_agent(
         tool_calls = stream_result.tool_calls
 
         if not tool_calls:
-            if not text_content and emitter:
-                emitter.emit_agent_message_chunk("(no response)")
+            if not text_content and hub:
+                hub.emit_agent_message_chunk("(no response)")
             break
 
-        if text_content and not emitter:
-            sys.stdout.write("\n")
-
-        # 2. Assistant message
-        messages.append({
-            "role": "assistant",
-            "content": text_content or None,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                    },
-                }
-                for tc in tool_calls
-            ],
-        })
-
-        # 3. Tool execution via ToolRunner
+        # Execute tools — events drive msg_sub state
         for tc in tool_calls:
             tool_name = tc.name
             tool_id = tc.id
-            args = {}
 
-            if emitter:
-                import json
-                try:
-                    args = json.loads(tc.arguments) if tc.arguments else {}
-                except json.JSONDecodeError:
-                    args = {}
+            try:
+                args = json.loads(tc.arguments) if tc.arguments else {}
+            except json.JSONDecodeError:
+                args = {}
 
-                emitter.emit_tool_call(tool_id, tool_name, args)
-                emitter.emit_tool_update(tool_id, "in_progress")
+            if hub:
+                hub.emit_tool_call(tool_id, tool_name, args)
+                hub.emit_tool_update(tool_id, status="in_progress")
 
-            if config.verbose:
-                print(_call_summary(tool_name, args), file=sys.stderr)
-
+            final_result: ToolResult | None = None
+            streamed = False
             async for event in tools.execute(tool_name, tc.arguments):
                 if isinstance(event, ToolOutput):
-                    if emitter:
-                        emitter.emit_tool_update(tool_id, "streaming", raw_output=event.content)
+                    streamed = True
+                    if hub:
+                        hub.emit_tool_update(tool_id, raw_output=event.content)
                     continue
+                final_result = event
 
-                # ToolResult — final output
-                processed, extras = _process_tool_result(
-                    event.content, tool_id, tool_name, args,
-                )
+            if final_result is None:
+                if hub:
+                    hub.emit_tool_update(
+                        tool_id, status="failed",
+                        raw_output="<error>Tool produced no result</error>",
+                    )
+                continue
 
-                if config.verbose:
-                    print(_result_summary(tool_name, event.content, event.success, args), file=sys.stderr)
+            result = final_result.content
+            success = final_result.success
+            status = "completed" if success else "failed"
 
-                if emitter:
-                    status = "completed" if event.success else "failed"
-                    emitter.emit_tool_update(tool_id, status, raw_output=processed)
-                    for msg in extras:
-                        emitter.emit_user_message_chunk(msg["content"])
+            if tool_name == "Skill" and success:
+                # Skill expansion: emit completed + user_message with full content
+                if hub:
+                    hub.emit_tool_update(tool_id, status=status)
+                    hub.emit_user_message_chunk(result)
+            elif streamed:
+                # Result event carries no rawOutput — consumers reconstruct
+                # from preceding process-output events
+                if hub:
+                    hub.emit_tool_update(tool_id, status=status)
+            else:
+                if hub:
+                    hub.emit_tool_update(tool_id, status=status, raw_output=result)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": processed,
-                })
-                for msg in extras:
-                    messages.append(msg)
+        # Flush msg_sub to incorporate assistant + tool messages into its list
+        msg_sub.flush()
 
     # --- Session end ---
-    if emitter:
+    if hub:
         stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
-        emitter.on_session_end(stop_reason)
+        hub.on_session_end(stop_reason)
 
     return 1 if had_error else 0
