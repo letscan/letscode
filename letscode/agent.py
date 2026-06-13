@@ -196,7 +196,7 @@ async def run_agent(
                 )
 
                 if config.verbose:
-                    print(f"  <- {tool_name}: {_result_summary(tool_name, event.content)}", file=sys.stderr)
+                    print(_result_summary(tool_name, event.content, event.success, args), file=sys.stderr)
 
                 if emitter:
                     status = "completed" if event.success else "failed"

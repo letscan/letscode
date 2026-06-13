@@ -2,11 +2,25 @@
 
 import asyncio
 import json
+import os
 import sys
 from contextlib import AsyncExitStack
 from typing import Any
 
 _DEFAULT_CONNECT_TIMEOUT = 30  # seconds
+
+
+def _info(msg: str) -> None:
+    """Print a dim info line to stderr."""
+    use_ansi = (
+        os.environ.get("FORCE_COLOR") in ("1", "true", "yes")
+        or (os.environ.get("NO_COLOR") is None and hasattr(sys.stderr, "isatty") and sys.stderr.isatty())
+    )
+    if use_ansi:
+        msg = f"\033[2m• {msg}\033[0m"
+    else:
+        msg = f"  {msg}"
+    print(msg, file=sys.stderr)
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -119,13 +133,13 @@ class McpManager:
             try:
                 await asyncio.wait_for(conn.connect(), timeout=timeout)
                 if not quiet:
-                    print(f"  [MCP] {name}: {len(conn.tools)} tools loaded", file=sys.stderr)
+                    _info(f"[MCP] {name}: {len(conn.tools)} tools loaded")
             except asyncio.TimeoutError:
                 if not quiet:
-                    print(f"  [MCP] {name}: connect timed out ({timeout}s), skipping", file=sys.stderr)
+                    _info(f"[MCP] {name}: connect timed out ({timeout}s), skipping")
             except Exception as e:
                 if not quiet:
-                    print(f"  [MCP] {name}: connect failed — {e}", file=sys.stderr)
+                    _info(f"[MCP] {name}: connect failed — {e}")
 
     def get_tool_definitions(self) -> list[dict]:
         """Return OpenAI function-calling tool definitions for all MCP tools."""
