@@ -206,8 +206,18 @@ def execute(args: dict[str, Any]) -> str:
         lines.append(f"Arguments: {skill_args}")
     lines.append("")
     lines.append(expanded)
+    content = "\n".join(lines)
 
-    return "\n".join(lines)
+    # The expanded skill content is injected into the conversation via a
+    # user_message event (consumed by MessageSubscriber), NOT via the tool
+    # result string. This frees the return value to carry a concise display
+    # label for the CLI/ACP presentation layer.
+    from ..events import get_hub
+    hub = get_hub()
+    if hub:
+        hub.emit_user_message_chunk(content)
+
+    return f"Loaded skill {canonical_name} from {skill_path}"
 
 
 def get_skill_list(cwd: str | None = None) -> list[dict[str, str]]:

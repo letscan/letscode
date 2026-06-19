@@ -345,9 +345,12 @@ class TestFormatResult:
     # --- Skill ---
 
     def test_skill_success(self):
-        r = self._fmt("Skill", "skill output", True, {"skill": "commit"})
+        # Skill execute() returns a display label carrying name + path
+        r = self._fmt("Skill", "Loaded skill commit from /p/commit/SKILL.md", True,
+                       {"skill": "commit"})
         assert "Loaded skill" in r
         assert "commit" in r
+        assert "/p/commit/SKILL.md" in r
 
     # --- Agent ---
 

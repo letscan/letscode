@@ -367,8 +367,9 @@ def _result_grep(result: str, success: bool, args: dict, **_) -> str:
 def _result_skill(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
-    name = args.get("skill", "").lstrip("/")
-    return f"{_status(True)}Loaded skill {name}"
+    # The skill tool's return value is already the concise display label
+    # ("Loaded skill <name> from <path>"); surface it directly.
+    return f"{_status(True)}{result.strip()}"
 
 
 def _result_agent(result: str, success: bool, args: dict, **_) -> str:

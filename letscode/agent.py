@@ -143,12 +143,7 @@ async def run_agent(
             success = final_result.success
             status = "completed" if success else "failed"
 
-            if tool_name == "Skill" and success:
-                # Skill expansion: emit completed + user_message with full content
-                if hub:
-                    hub.emit_tool_update(tool_id, status=status)
-                    hub.emit_user_message_chunk(result)
-            elif streamed:
+            if streamed:
                 # Result event carries no rawOutput — consumers reconstruct
                 # from preceding process-output events
                 if hub:

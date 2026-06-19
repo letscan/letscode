@@ -269,29 +269,21 @@ class MessageSubscriber:
 
         for tid in self._tool_order:
             tool = self._pending_tools[tid]
-            name = tool["name"]
             result = tool.get("result", "")
 
             # Persist large results (live mode only)
             if self._log_stem and len(result) > RESULT_THRESHOLD:
                 result = persist_result(self._log_stem, tid, result)
 
-            # Skill expansion: replace tool content with summary
-            if name == "Skill" and not result.startswith("<error>"):
-                skill_name = tool.get("input", {}).get("skill", "")
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tid,
-                    "content": f"Launching skill: {skill_name}",
-                })
-                # User message with full skill content is handled by
-                # user_message_chunk events → _extra_after_tool
-            else:
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tid,
-                    "content": result,
-                })
+            # Tool result goes to the LLM as-is. For Skill, the return value
+            # is already a concise label ("Loaded skill X from <path>"); the
+            # full skill content reaches the LLM via a separate user message
+            # injected by the user_message_chunk event (no duplication).
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": tid,
+                "content": result,
+            })
 
             for msg in self._extra_after_tool.get(tid, []):
                 self.messages.append(msg)
