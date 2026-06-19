@@ -67,12 +67,9 @@ def _sym(unicode: str, ascii: str) -> str:
 # Preview helpers
 # ---------------------------------------------------------------------------
 
-_THRESHOLD = 10
-
-
 def _preview_lines(lines: list[str], n: int = 5) -> list[str]:
     bar = _sym(_BAR, _ASCII_BAR)
-    if len(lines) <= _THRESHOLD:
+    if len(lines) <= 2 * n:
         return [f"  {bar} {l}" for l in lines]
     head = [f"  {bar} {l}" for l in lines[:n]]
     omitted = len(lines) - 2 * n
@@ -82,7 +79,7 @@ def _preview_lines(lines: list[str], n: int = 5) -> list[str]:
 
 def _preview_items(items: list[str], n: int = 5) -> list[str]:
     bar = _sym(_BAR, _ASCII_BAR)
-    if len(items) <= _THRESHOLD:
+    if len(items) <= 2 * n:
         return [f"  {bar} {l}" for l in items]
     head = [f"  {bar} {l}" for l in items[:n]]
     remaining = len(items) - n
@@ -226,20 +223,33 @@ def format_result(name: str, result: str, success: bool, args: dict) -> str:
 
 
 def _result_bash(result: str, success: bool, args: dict) -> str:
-    lines = result.strip().split("\n")
+    stripped = result.strip()
     exit_code = None
-    if lines and lines[-1].startswith("[Exit code:"):
-        exit_code = lines[-1]
-        lines = lines[:-1]
+    body = stripped
+    # Strip trailing exit-code marker (present on failures)
+    tail_nl = body.rfind("\n")
+    if tail_nl != -1 and body[tail_nl + 1:].startswith("[Exit code:"):
+        exit_code = body[tail_nl + 1:]
+        body = body[:tail_nl].rstrip()
+    elif body.startswith("[Exit code:"):
+        exit_code = body
+        body = ""
 
+    # No meaningful output (empty, or the tool's "(no output)" placeholder)
+    body_empty = (not body) or body == "(no output)"
+
+    if body_empty:
+        if not success:
+            ec = exit_code.strip("[]") if exit_code else "failed"
+            return f"{_status(False)}{ec}  (No output)"
+        return f"{_status(True)}0 lines  (No output)"
+
+    lines = body.split("\n")
     if not success:
         ec = exit_code.strip("[]") if exit_code else "failed"
         header = f"{_status(False)}{ec}"
     else:
         header = f"{_status(True)}{len(lines)} lines"
-
-    if not lines or (len(lines) == 1 and not lines[0].strip()):
-        return header
 
     preview = _preview_lines(lines)
     return header + "\n" + "\n".join(preview)
@@ -249,9 +259,17 @@ def _result_read(result: str, success: bool, args: dict) -> str:
     if not success:
         return _format_error(result)
 
-    lines = result.strip().split("\n")
+    stripped = result.strip()
     offset = args.get("offset")
     limit = args.get("limit")
+
+    if not stripped:
+        start = offset or 1
+        end = limit if (offset and limit) else start
+        rng = f"  (L{start}-{end})" if (offset or limit) else ""
+        return f"{_status(True)}(Empty){rng}"
+
+    lines = stripped.split("\n")
     start = offset or 1
     end = start + len(lines) - 1
 
@@ -266,13 +284,15 @@ def _result_write(result: str, success: bool, args: dict, **_) -> str:
         return _format_error(result)
 
     content = args.get("content", "")
+    fp = args.get("file_path", "")
     lines = content.split("\n")
+    n_lines = len(lines)
+    n_chars = len(content)
     action = "created" if "created" in result.lower() else "updated"
-    header = f"{_status(True)}{action}  {len(lines)} lines"
+    header = f"{_status(True)}{action}  {n_lines} lines / {n_chars} chars  {fp}"
 
-    bar = _sym(_BAR, _ASCII_BAR)
-    preview_lines = [f"  {bar} {l}" for l in lines]
-    return header + "\n" + "\n".join(preview_lines)
+    preview = _preview_lines(lines, n=25)
+    return header + "\n" + "\n".join(preview)
 
 
 def _result_edit(result: str, success: bool, args: dict, **_) -> str:
@@ -347,8 +367,8 @@ def _result_grep(result: str, success: bool, args: dict, **_) -> str:
 def _result_skill(result: str, success: bool, args: dict, **_) -> str:
     if not success:
         return _format_error(result)
-    name = args.get("skill", "")
-    return f"{_status(True)}launched  {name}"
+    name = args.get("skill", "").lstrip("/")
+    return f"{_status(True)}Loaded skill {name}"
 
 
 def _result_agent(result: str, success: bool, args: dict, **_) -> str:

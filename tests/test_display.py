@@ -224,6 +224,15 @@ class TestFormatResult:
         assert "3 lines" in r
         assert "omitted" not in r
 
+    def test_bash_no_output_placeholder(self):
+        r = self._fmt("Bash", "(no output)")
+        assert "0 lines" in r
+        assert "(No output)" in r
+
+    def test_bash_empty_output(self):
+        r = self._fmt("Bash", "")
+        assert "(No output)" in r
+
     # --- Read ---
 
     def test_read_success(self):
@@ -242,6 +251,11 @@ class TestFormatResult:
         assert "20 lines" in r
         assert "10 lines omitted" in r
 
+    def test_read_empty_file(self):
+        r = self._fmt("Read", "", True, {})
+        assert "(Empty)" in r
+        assert "lines" not in r
+
     # --- Write ---
 
     def test_write_created(self):
@@ -255,6 +269,20 @@ class TestFormatResult:
                        {"content": "hello\nworld"})
         assert "hello" in r
         assert "world" in r
+
+    def test_write_large_file_head_tail_preview(self):
+        content = "\n".join(f"line{i}" for i in range(100))
+        r = self._fmt("Write", "File created successfully at: big.py (100 lines)", True,
+                       {"file_path": "/p/big.py", "content": content})
+        assert "100 lines" in r
+        assert "chars" in r
+        assert "/p/big.py" in r
+        # head + tail with omission
+        assert "line0" in r
+        assert "line99" in r
+        assert "50 lines omitted" in r
+        # middle lines are not shown
+        assert "line50" not in r
 
     # --- Edit ---
 
@@ -318,7 +346,7 @@ class TestFormatResult:
 
     def test_skill_success(self):
         r = self._fmt("Skill", "skill output", True, {"skill": "commit"})
-        assert "launched" in r
+        assert "Loaded skill" in r
         assert "commit" in r
 
     # --- Agent ---
