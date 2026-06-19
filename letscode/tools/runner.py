@@ -16,8 +16,13 @@ IsFileRead = Callable[[str], bool]
 
 @dataclass
 class ToolOutput:
-    """Streaming chunk from a tool execution."""
+    """Streaming chunk from a tool execution.
+
+    separator indicates how the record was terminated in the source stream:
+    "\\n" (new line) or "\\r" (carriage return, overwrites current line).
+    """
     content: str
+    separator: str = "\n"
 
 
 class ToolRunner:

@@ -100,12 +100,6 @@ def _status(success: bool) -> str:
     return _sym(_CROSS, _ASCII_CROSS) + " "
 
 
-def format_stream_line(text: str) -> str:
-    """Format a single streaming output line (dim │ prefix)."""
-    bar = _sym(_BAR, _ASCII_BAR)
-    return _dim(f"  {bar} {text}")
-
-
 # ---------------------------------------------------------------------------
 # Call formatters
 # ---------------------------------------------------------------------------

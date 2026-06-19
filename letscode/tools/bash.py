@@ -12,8 +12,12 @@ from ._types import ToolResult
 from .runner import ToolOutput
 
 
-async def _read_records(stream: asyncio.StreamReader) -> AsyncGenerator[str, None]:
-    """Read from a stream, yielding records split on \\r or \\n."""
+async def _read_records(stream: asyncio.StreamReader) -> AsyncGenerator[tuple[str, str], None]:
+    """Read from a stream, yielding (record, separator) split on \\r or \\n.
+
+    separator is "\\r" or "\\n" indicating how the record was terminated.
+    \\r\\n is treated as a single "\\n" separator.
+    """
     buf = b""
     while True:
         chunk = await stream.read(4096)
@@ -21,7 +25,7 @@ async def _read_records(stream: asyncio.StreamReader) -> AsyncGenerator[str, Non
             if buf:
                 text = buf.decode(errors="replace").strip()
                 if text:
-                    yield text
+                    yield text, "\n"
             return
         buf += chunk
         while True:
@@ -30,17 +34,20 @@ async def _read_records(stream: asyncio.StreamReader) -> AsyncGenerator[str, Non
             if cr < 0 and nl < 0:
                 break
             if cr < 0:
-                pos = nl
+                pos, sep = nl, "\n"
             elif nl < 0:
-                pos = cr
+                pos, sep = cr, "\r"
+            elif cr < nl:
+                pos, sep = cr, "\r"
             else:
-                pos = min(cr, nl)
+                pos, sep = nl, "\n"
             record = buf[:pos].decode(errors="replace")
             buf = buf[pos + 1:]
-            if buf.startswith(b"\n"):
+            if sep == "\r" and buf.startswith(b"\n"):
                 buf = buf[1:]
+                sep = "\n"
             if record:
-                yield record
+                yield record, sep
 
 SCHEMA = {
     "type": "function",
@@ -148,14 +155,14 @@ async def execute(
         lines: list[str] = []
         start = time.monotonic()
 
-        async for record in _read_records(reader):
+        async for record, sep in _read_records(reader):
             if time.monotonic() - start > timeout:
                 proc.kill()
                 transport.close()
                 yield ToolResult(content=f"Command timed out after {timeout}s", success=False)
                 return
             lines.append(record)
-            yield ToolOutput(content=record)
+            yield ToolOutput(content=record, separator=sep)
 
         await proc.wait()
         transport.close()

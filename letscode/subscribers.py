@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .tools._display import format_call, format_result, format_stream_line
+from .tools._display import format_call, format_result
 
 
 # ---------------------------------------------------------------------------
@@ -13,6 +13,68 @@ from .tools._display import format_call, format_result, format_stream_line
 # ---------------------------------------------------------------------------
 
 RESULT_THRESHOLD = 32 * 1024  # 32KB
+
+
+# ---------------------------------------------------------------------------
+# StreamBuffer — accumulates streaming records into lines
+# ---------------------------------------------------------------------------
+
+class StreamBuffer:
+    """Accumulates streaming records into lines, handling \\r and \\n.
+
+    - "\\n" separator commits the current line and starts a new one.
+    - "\\r" separator overwrites the current line (progress-bar behavior).
+
+    all_lines: every line including the in-progress current line.
+    preview: head/tail window for display — first n lines, an omitted
+             placeholder, then the last n lines; or all lines if short.
+             Same rule for streaming and final display.
+    merged: full text joined by newlines, for persistence/replay.
+    """
+
+    def __init__(self, head_tail: int = 5):
+        self._committed: list[str] = []
+        self._current: str = ""
+        self._at_line_start: bool = True
+        self._n = head_tail
+
+    def feed(self, content: str, separator: str) -> None:
+        if self._at_line_start:
+            self._current = content
+        else:
+            self._current += content
+
+        if separator == "\r":
+            self._at_line_start = True
+        elif separator == "\n":
+            self._committed.append(self._current)
+            self._current = ""
+            self._at_line_start = True
+
+    @property
+    def all_lines(self) -> list[str]:
+        lines = list(self._committed)
+        if self._current:
+            lines.append(self._current)
+        return lines
+
+    def preview(self) -> tuple[list[str], int]:
+        """Return (display_lines, omitted_count) using a head/tail window.
+
+        - <= 2n lines: all lines, omitted 0.
+        - > 2n lines: first n + last n, omitted = len - 2n.
+        display_lines excludes the omitted placeholder; the caller renders
+        it inline between head and tail.
+        """
+        all_l = self.all_lines
+        n = self._n
+        if len(all_l) <= 2 * n:
+            return all_l, 0
+        return all_l[:n] + all_l[-n:], len(all_l) - 2 * n
+
+    @property
+    def merged(self) -> str:
+        return "\n".join(self.all_lines)
 
 
 def persist_result(log_stem: Path, tool_call_id: str, result: str) -> str:
@@ -134,7 +196,7 @@ class MessageSubscriber:
             "name": name,
             "arguments": json.dumps(inp, ensure_ascii=False) if isinstance(inp, dict) else str(inp),
             "input": inp,
-            "stream_parts": [],
+            "stream_buf": StreamBuffer(),
         }
         self._tool_order.append(tid)
 
@@ -146,18 +208,19 @@ class MessageSubscriber:
             return
 
         if not status:
-            # Process output (streaming chunk) — accumulate for reconstruction
+            # Process output (streaming chunk) — accumulate via StreamBuffer
             chunk = data.get("rawOutput", "")
+            sep = data.get("separator", "\n")
             if chunk:
-                self._pending_tools[tid]["stream_parts"].append(chunk)
+                self._pending_tools[tid]["stream_buf"].feed(chunk, sep)
             return
 
         if status in ("completed", "failed"):
             # Final event: prefer rawOutput, fall back to accumulated stream
             result = _resolve_result(data)
             if not result:
-                parts = self._pending_tools[tid].get("stream_parts", [])
-                result = "\n".join(parts) if parts else ""
+                buf = self._pending_tools[tid].get("stream_buf")
+                result = buf.merged if buf else ""
             if status == "failed" and not result.startswith("<error>"):
                 result = f"<error>{result}</error>" if result else "<error>failed</error>"
             self._pending_tools[tid]["result"] = result
@@ -255,6 +318,8 @@ class CliOutputSubscriber:
         self._verbose = verbose
         self._streamed: set[str] = set()
         self._tool_info: dict[str, dict] = {}  # tid -> {name, args}
+        self._stream_bufs: dict[str, StreamBuffer] = {}  # tid -> StreamBuffer
+        self._rendered = 0  # lines currently rendered in the stream window
 
     def __call__(self, event_type: str, data: dict) -> None:
         if event_type == "agent_message_chunk":
@@ -291,17 +356,90 @@ class CliOutputSubscriber:
             # Process output (streaming chunk)
             self._streamed.add(tid)
             if self._verbose:
-                print(format_stream_line(raw_output), file=sys.stderr)
+                sep = data.get("separator", "\n")
+                buf = self._stream_bufs.setdefault(tid, StreamBuffer())
+                buf.feed(raw_output, sep)
+                lines, omitted = buf.preview()
+                self._rendered = self._render_stream(lines, omitted)
         elif status in ("completed", "failed"):
             if self._verbose:
+                # Drain the buffer BEFORE clearing the window. The completed
+                # event carries no rawOutput when output was streamed
+                # (agent.py emits status only), so reconstruct the full
+                # result from the accumulated StreamBuffer here.
+                buf = self._stream_bufs.pop(tid, None)
+                self._clear_stream()
                 success = status == "completed"
-                if tid in self._streamed:
-                    # Streaming output already shown line-by-line; just mark done
-                    from .tools._display import _status, _dim
-                    print(_dim(_status(success) + "done"), file=sys.stderr)
+                info = self._tool_info.get(tid, {})
+                name = info.get("name", "")
+                args = info.get("args", {})
+                if tid in self._streamed and buf:
+                    result = buf.merged
                 else:
-                    info = self._tool_info.get(tid, {})
-                    name = info.get("name", "")
-                    args = info.get("args", {})
                     result = raw_output or ""
-                    print(format_result(name, result, success, args), file=sys.stderr)
+                print(format_result(name, result, success, args), file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # ANSI streaming window (verbose mode only)
+    # ------------------------------------------------------------------
+
+    def _render_stream(self, lines: list[str], omitted: int) -> int:
+        """Render the streaming window. Returns the new rendered line count.
+
+        Layout when omitted > 0:  head n + omitted placeholder + tail n.
+        Layout when omitted == 0: all lines as-is.
+        """
+        from .tools._display import use_ansi, _dim, _sym, _BAR, _ASCII_BAR
+
+        bar = _sym(_BAR, _ASCII_BAR)
+        n = 5  # head/tail size; matches StreamBuffer default
+
+        # Build the full row list to draw (rows are plain text; _dim applied
+        # uniformly so every row has identical escape sequences — required
+        # for in-place ANSI redraw to align cleanly).
+        rows: list[str] = []
+        if omitted > 0:
+            head, tail = lines[:n], lines[n:]
+            rows = [f"  {bar} {l}" for l in head]
+            rows.append(f"  ... ({omitted} lines omitted)")
+            rows += [f"  {bar} {l}" for l in tail]
+        else:
+            rows = [f"  {bar} {l}" for l in lines]
+
+        if not use_ansi():
+            # Fallback: without ANSI we can't redraw in place; emit the last
+            # row so the user still sees current progress.
+            if rows:
+                sys.stderr.write(_dim(rows[-1]) + "\n")
+                sys.stderr.flush()
+            return 0
+
+        new_count = len(rows)
+        total = max(self._rendered, new_count)
+
+        # Move cursor up to the top of the rendered region
+        if self._rendered > 0:
+            sys.stderr.write(f"\033[{self._rendered}A")
+
+        # Clear and redraw each line
+        for i in range(total):
+            sys.stderr.write("\033[2K")
+            if i < new_count:
+                sys.stderr.write(_dim(rows[i]))
+            sys.stderr.write("\r\n")
+
+        # If we cleared more lines than we drew, move back up
+        if total > new_count:
+            sys.stderr.write(f"\033[{total - new_count}A")
+
+        sys.stderr.flush()
+        return new_count
+
+    def _clear_stream(self) -> None:
+        """Clear the rendered streaming window."""
+        from .tools._display import use_ansi
+
+        if use_ansi() and self._rendered > 0:
+            sys.stderr.write(f"\033[{self._rendered}A\033[J")
+            sys.stderr.flush()
+        self._rendered = 0

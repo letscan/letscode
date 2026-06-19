@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .subscribers import RESULT_THRESHOLD
+from .subscribers import RESULT_THRESHOLD, StreamBuffer
 from .tools._display import format_call, format_result
 
 
@@ -147,12 +147,15 @@ class EventHub:
         })
 
     def emit_tool_update(self, tool_call_id: str, status: str | None = None,
-                         raw_output: str | None = None) -> None:
+                         raw_output: str | None = None,
+                         separator: str | None = None) -> None:
         data: dict = {"toolCallId": tool_call_id}
         if status is not None:
             data["status"] = status
         if raw_output is not None:
             data["rawOutput"] = raw_output
+        if separator is not None:
+            data["separator"] = separator
         self.emit("tool_call_update", data)
 
     def emit_user_message_chunk(self, content: str) -> None:
@@ -259,7 +262,7 @@ class FeedOutputSubscriber:
 
     def __init__(self, path: str, mode: str):
         self._mode = mode
-        self._stream_parts: dict[str, list[str]] = {}
+        self._stream_bufs: dict[str, StreamBuffer] = {}
         self._tool_info: dict[str, dict] = {}  # tid -> {name, args}
         self._log_path = Path(path)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,13 +276,14 @@ class FeedOutputSubscriber:
             status = data.get("status")
             if not status:
                 chunk = data.get("rawOutput", "")
+                sep = data.get("separator", "\n")
                 if chunk:
-                    self._stream_parts.setdefault(tid, []).append(chunk)
+                    self._stream_bufs.setdefault(tid, StreamBuffer()).feed(chunk, sep)
                 return
-            parts = self._stream_parts.pop(tid, [])
-            if parts and "rawOutput" not in data:
+            buf = self._stream_bufs.pop(tid, None)
+            if buf and buf.all_lines and "rawOutput" not in data:
                 data = dict(data)
-                data["rawOutput"] = "\n".join(parts)
+                data["rawOutput"] = buf.merged
             if self._mode == "json":
                 data = self._maybe_persist(data)
 

@@ -124,7 +124,10 @@ async def run_agent(
                 if isinstance(event, ToolOutput):
                     streamed = True
                     if hub:
-                        hub.emit_tool_update(tool_id, raw_output=event.content)
+                        hub.emit_tool_update(
+                            tool_id, raw_output=event.content,
+                            separator=event.separator,
+                        )
                     continue
                 final_result = event
 
