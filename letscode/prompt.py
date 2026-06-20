@@ -161,6 +161,32 @@ def _env_section(model_id: str) -> str:
     )
 
 
+def _skills_section() -> str:
+    """Inject available skills (name + description) for model-driven discovery.
+
+    Only name + description are injected — the model uses these to decide
+    whether to trigger a skill. The Skill tool resolves SKILL.md by name at
+    execution time, so the path is withheld to save context.
+    """
+    from .tools.skill import get_skill_list
+
+    skills = get_skill_list()
+    if not skills:
+        return ""
+    lines = [
+        "# Available skills",
+        "",
+        "You can invoke these skills via the Skill tool (or the user may type "
+        "`/<skill-name>`):",
+        "",
+    ]
+    for s in skills:
+        name = s["name"]
+        desc = s.get("description", "")
+        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+    return "\n".join(lines)
+
+
 def build_system_prompt(model_id: str) -> str:
     """Assemble the full system prompt."""
     return "\n\n".join([
@@ -172,4 +198,5 @@ def build_system_prompt(model_id: str) -> str:
         _tone_and_style_section(),
         _output_efficiency_section(),
         _env_section(model_id),
+        _skills_section(),
     ])

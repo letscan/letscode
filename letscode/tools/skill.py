@@ -19,7 +19,7 @@ SCHEMA = {
             '  - skill: "commit"\n'
             '  - skill: "commit", args: "-m \'Fix bug\'"\n\n'
             "Important:\n"
-            "- Available skills are listed in the tool description\n"
+            "- Available skills are listed in the system prompt under \"Available skills\"\n"
             "- When a skill matches the user's request, invoke the relevant Skill tool "
             "BEFORE generating any other response\n"
             "- NEVER mention a skill without actually calling this tool\n"
@@ -221,7 +221,12 @@ def execute(args: dict[str, Any]) -> str:
 
 
 def get_skill_list(cwd: str | None = None) -> list[dict[str, str]]:
-    """Return list of {name, description} for available skills."""
+    """Return list of {name, description, path} for available skills.
+
+    `name` + `description` feed the system-prompt listing (model discovery);
+    `path` is the cached locator the Skill tool uses at execution time, so
+    it need not re-scan the filesystem.
+    """
     skills = _discover_skills(cwd)
     result = []
     for name, path in sorted(skills.items()):
@@ -231,7 +236,8 @@ def get_skill_list(cwd: str | None = None) -> list[dict[str, str]]:
             result.append({
                 "name": name,
                 "description": fm.get("description", ""),
+                "path": str(path),
             })
         except Exception:
-            result.append({"name": name, "description": ""})
+            result.append({"name": name, "description": "", "path": str(path)})
     return result
