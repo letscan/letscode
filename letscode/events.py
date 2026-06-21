@@ -192,22 +192,28 @@ class EventHub:
 
 
 # ---------------------------------------------------------------------------
-# LogSubscriber — 1:1 raw event log (always registered)
+# LogSubscriber — human-readable debug log (always registered, NOT a feed)
 # ---------------------------------------------------------------------------
 
 class LogSubscriber:
-    """Writes every event verbatim to .letscode/logs/*.jsonl.
+    """Writes a human-readable debug log to .letscode/logs/*.log.
 
-    Always registered. Records the in-memory event stream 1:1, including
-    per-line process-output events, for debugging and audit. Does NOT
-    collapse or transform events.
+    Always registered. Intentionally NOT jsonl: this is an internal debug
+    log, not a replay feed. Using a non-JSON format structurally prevents
+    it from being mistaken for a feed file (read_events json.loads would
+    fail on it). The replay/continuation feed is a separate concern owned
+    by FeedOutputSubscriber (--output). Large tool outputs are summarized
+    (size + line count) rather than written in full to keep the log small.
     """
+
+    # Truncate any single summary field beyond this many chars
+    _SUMMARY_LIMIT = 200
 
     def __init__(self, log_dir: Path):
         log_dir.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
         short_id = uuid.uuid4().hex[:4]
-        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}.jsonl"
+        filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{short_id}.log"
         self._log_path = log_dir / filename
         self._log_file = open(self._log_path, "w", encoding="utf-8")
 
@@ -216,29 +222,80 @@ class LogSubscriber:
         return self._log_path
 
     def __call__(self, event_type: str, data: dict) -> None:
-        event = {
-            "type": event_type,
-            "timestamp": _now(),
-            "data": data,
-        }
-        line = json.dumps(event, ensure_ascii=False)
-        self._log_file.write(line + "\n")
-        self._log_file.flush()
+        summary = self._summarize(event_type, data)
+        self._write(_now(), "INFO", event_type, summary)
 
     def log_debug(self, message: str) -> None:
         """Write a debug line that is not emitted as an event."""
-        event = {
-            "type": "debug",
-            "timestamp": _now(),
-            "data": {"message": message},
-        }
-        line = json.dumps(event, ensure_ascii=False)
-        self._log_file.write(line + "\n")
-        self._log_file.flush()
+        self._write(_now(), "DEBUG", "debug", message)
 
     def close(self) -> None:
         if self._log_file and not self._log_file.closed:
             self._log_file.close()
+
+    # -- internals --
+
+    def _write(self, ts: str, level: str, event_type: str, summary: str) -> None:
+        # Truncate over-long single-line summaries
+        if len(summary) > self._SUMMARY_LIMIT:
+            summary = summary[: self._SUMMARY_LIMIT] + "…"
+        line = f"[{ts}] {level} {event_type}: {summary}\n"
+        self._log_file.write(line)
+        self._log_file.flush()
+
+    def _summarize(self, event_type: str, data: dict) -> str:
+        if event_type == "prompt":
+            return self._prompt_summary(data)
+        if event_type == "agent_message_chunk":
+            return data.get("text", "")
+        if event_type == "tool_call":
+            return self._tool_call_summary(data)
+        if event_type == "tool_call_update":
+            return self._tool_update_summary(data)
+        if event_type == "user_message_chunk":
+            return data.get("text", "")
+        if event_type == "error":
+            return data.get("message", "")
+        if event_type == "result":
+            return data.get("text", "")
+        if event_type == "init":
+            return data.get("model", "")
+        # Fallback: compact JSON of the data
+        return json.dumps(data, ensure_ascii=False)
+
+    def _prompt_summary(self, data) -> str:
+        if isinstance(data, dict):
+            # prompt_blocks form
+            return " ".join(
+                b.get("text", "") for b in data if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if isinstance(data, list):
+            return " ".join(
+                b.get("text", "") for b in data if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return str(data)
+
+    def _tool_call_summary(self, data: dict) -> str:
+        name = data.get("toolName", "?")
+        args = data.get("rawInput", {})
+        # Compact one-liner of the args
+        arg_str = json.dumps(args, ensure_ascii=False)
+        return f"{name} ({arg_str})"
+
+    def _tool_update_summary(self, data: dict) -> str:
+        status = data.get("status")
+        raw = data.get("rawOutput")
+        sep = data.get("separator")
+        if status in ("completed", "failed"):
+            if raw:
+                n = raw.count("\n") + 1
+                size = len(raw)
+                return f"{status} ({n} lines, {size} bytes)"
+            return f"{status}"
+        if raw is not None:
+            # Streaming chunk
+            return f"chunk ({sep!r}): {raw}"
+        return f"{status or 'update'}"
 
 
 # ---------------------------------------------------------------------------
