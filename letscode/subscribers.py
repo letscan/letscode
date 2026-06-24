@@ -316,6 +316,8 @@ class CliOutputSubscriber:
     def __call__(self, event_type: str, data: dict) -> None:
         if event_type == "agent_message_chunk":
             self._on_agent_message_chunk(data)
+        elif event_type == "agent_thought_chunk":
+            self._on_agent_thought_chunk(data)
         elif event_type == "tool_call":
             self._on_tool_call(data)
         elif event_type == "tool_call_update":
@@ -330,6 +332,20 @@ class CliOutputSubscriber:
         if text:
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
+
+    def _on_agent_thought_chunk(self, data: dict) -> None:
+        # Verbose-only: render reasoning/thinking to stderr (dim) so it
+        # stays out of stdout pipes. Non-verbose mode stays quiet.
+        if not self._verbose:
+            return
+        if "text" in data and "type" in data:
+            text = data.get("text", "")
+        else:
+            text = data.get("content", {}).get("text", "")
+        if text:
+            from .tools._display import _dim
+            sys.stderr.write(_dim(f"💭 {text}") + "\n")
+            sys.stderr.flush()
 
     def _on_tool_call(self, data: dict) -> None:
         tid = data.get("toolCallId", "")

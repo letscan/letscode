@@ -17,6 +17,7 @@ class ToolCall:
 class StreamResult:
     text_content: str
     tool_calls: list[ToolCall]
+    thought_content: str = ""
 
 
 _MAX_LINE_BUF = 100_000
@@ -29,11 +30,15 @@ def consume_stream(
     max_tokens: int,
     tools: list[dict] | None = None,
     on_line: Callable[[str], None] | None = None,
+    on_thought_line: Callable[[str], None] | None = None,
 ) -> StreamResult:
     """Consume a streaming LLM response.
 
     Calls on_line(text) for each complete line of text output.
-    Returns StreamResult with full text content and accumulated tool calls.
+    Calls on_thought_line(text) for each complete line of reasoning/thinking
+    output (e.g. GLM's reasoning_content field).
+    Returns StreamResult with full text content, thought content, and
+    accumulated tool calls.
     """
     response = client.chat.completions.create(
         model=model,
@@ -44,8 +49,10 @@ def consume_stream(
     )
 
     text_content = ""
+    thought_content = ""
     tc_accum: dict[int, dict[str, str]] = {}
     line_buf = ""
+    thought_buf = ""
 
     for chunk in response:
         if not chunk.choices:
@@ -67,6 +74,22 @@ def consume_stream(
                 if on_line:
                     on_line(line)
 
+        # Line-buffered reasoning/thinking output (GLM reasoning_content,
+        # DeepSeek, etc.). The field is undeclared on the SDK's ChoiceDelta
+        # but preserved at runtime via extra="allow".
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            thought_content += reasoning
+            thought_buf += reasoning
+            if len(thought_buf) > _MAX_LINE_BUF:
+                if on_thought_line:
+                    on_thought_line(thought_buf)
+                thought_buf = ""
+            while "\n" in thought_buf:
+                line, thought_buf = thought_buf.split("\n", 1)
+                if on_thought_line:
+                    on_thought_line(line)
+
         # Accumulate tool call fragments
         if delta.tool_calls:
             for tc_delta in chunk.choices[0].delta.tool_calls:
@@ -84,6 +107,8 @@ def consume_stream(
     # Flush remaining buffered text
     if line_buf and on_line:
         on_line(line_buf)
+    if thought_buf and on_thought_line:
+        on_thought_line(thought_buf)
 
     tool_calls = [
         ToolCall(
@@ -94,4 +119,8 @@ def consume_stream(
         for i in sorted(tc_accum.keys())
     ]
 
-    return StreamResult(text_content=text_content, tool_calls=tool_calls)
+    return StreamResult(
+        text_content=text_content,
+        tool_calls=tool_calls,
+        thought_content=thought_content,
+    )

@@ -122,3 +122,139 @@ class TestLogSubscriberSummaries:
         content = log.log_path.read_text()
         assert "] DEBUG " in content
         assert "something happened" in content
+
+
+class TestLogSubscriberThought:
+    """agent_thought_chunk is logged with a 💭 prefix for human clarity."""
+
+    def _setup(self, tmp_path):
+        log = LogSubscriber(tmp_path / "logs")
+        hub = EventHub()
+        set_hub(hub)
+        hub.subscribe(log)
+        return log, hub
+
+    def test_thought_logged_with_prefix(self, tmp_path):
+        log, hub = self._setup(tmp_path)
+        hub.emit_agent_thought_chunk("Let me consider the options")
+
+        content = log.log_path.read_text()
+        assert "💭" in content
+        assert "Let me consider the options" in content
+        assert "agent_thought_chunk" in content
+
+    def test_thought_distinct_from_message(self, tmp_path):
+        """A thought line carries the prefix; a message line does not."""
+        log, hub = self._setup(tmp_path)
+        hub.emit_agent_message_chunk("the answer")
+        hub.emit_agent_thought_chunk("reasoning here")
+
+        content = log.log_path.read_text()
+        lines = content.strip().split("\n")
+        msg_line = next(l for l in lines if "the answer" in l)
+        thought_line = next(l for l in lines if "reasoning here" in l)
+        assert "💭" not in msg_line
+        assert "💭" in thought_line
+
+
+class TestCliOutputThoughtVerboseOnly:
+    """CliOutputSubscriber renders thoughts to stderr only in verbose mode."""
+
+    def _emit(self, verbose: bool, capsys) -> str:
+        from letscode.subscribers import CliOutputSubscriber
+
+        sub = CliOutputSubscriber(verbose=verbose)
+        sub("agent_thought_chunk", {"type": "text", "text": "pondering deeply"})
+        captured = capsys.readouterr()
+        return captured
+
+    def test_verbose_emits_thought_to_stderr(self, capsys):
+        captured = self._emit(verbose=True, capsys=capsys)
+        assert "pondering deeply" in captured.err
+        assert "pondering deeply" not in captured.out
+
+    def test_non_verbose_silences_thought(self, capsys):
+        captured = self._emit(verbose=False, capsys=capsys)
+        assert captured.err == ""
+        assert captured.out == ""
+
+
+class TestConsumeStreamReasoning:
+    """consume_stream parses reasoning_content via getattr and routes it."""
+
+    def test_reasoning_routed_to_on_thought_line(self):
+        from letscode.stream import consume_stream
+
+        thoughts = []
+        client = _FakeClient([_fake_chunk(reasoning="thinking...")])
+        consume_stream(
+            client, "m", [], 100,
+            on_thought_line=lambda t: thoughts.append(t),
+        )
+        assert thoughts == ["thinking..."]
+
+    def test_reasoning_collected_in_thought_content(self):
+        from letscode.stream import consume_stream
+
+        client = _FakeClient([
+            _fake_chunk(reasoning="part 1"),
+            _fake_chunk(reasoning="part 2"),
+        ])
+        result = consume_stream(client, "m", [], 100)
+        assert result.thought_content == "part 1part 2"
+
+    def test_no_reasoning_yields_empty_thought_content(self):
+        from letscode.stream import consume_stream
+
+        client = _FakeClient([_fake_chunk(content="hello")])
+        result = consume_stream(client, "m", [], 100)
+        assert result.thought_content == ""
+        assert result.text_content == "hello"
+
+
+def _fake_chunk(*, content=None, reasoning=None):
+    """Build an object mimicking an OpenAI streaming chunk.
+
+    reasoning_content is set as a plain attribute to emulate the SDK's
+    extra="allow" behavior (the field is undeclared but preserved at runtime).
+    """
+    class _Delta:
+        pass
+
+    delta = _Delta()
+    delta.content = content
+    delta.tool_calls = None
+    if reasoning is not None:
+        delta.reasoning_content = reasoning
+
+    class _Choice:
+        pass
+
+    choice = _Choice()
+    choice.delta = delta
+
+    class _Chunk:
+        pass
+
+    chunk = _Chunk()
+    chunk.choices = [choice]
+    return chunk
+
+
+class _FakeClient:
+    """Minimal stand-in for openai.OpenAI with a streaming create()."""
+
+    def __init__(self, chunks):
+        # The nested chat.completions.create must read the chunks given here,
+        # so stash them on a shared location the generator closes over.
+        type(self).chat.completions._chunks = chunks
+
+    class chat:
+        class completions:
+            _chunks = []
+
+            @classmethod
+            def create(cls, **_):
+                def _gen():
+                    yield from cls._chunks
+                return _gen()

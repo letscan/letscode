@@ -85,9 +85,10 @@ async def run_agent(
         # LLM call
         try:
             on_line = hub.on_text_line if hub else None
+            on_thought_line = hub.on_thought_line if hub else None
             stream_result = consume_stream(
                 client, config.model, messages, config.max_tokens,
-                tools=all_tools, on_line=on_line,
+                tools=all_tools, on_line=on_line, on_thought_line=on_thought_line,
             )
         except Exception as e:
             print(f"\nAPI error: {e}", file=sys.stderr)

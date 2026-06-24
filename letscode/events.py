@@ -138,6 +138,17 @@ class EventHub:
             "text": text,
         })
 
+    def emit_agent_thought_chunk(self, text: str) -> None:
+        """Emit a reasoning/thinking chunk (e.g. GLM reasoning_content).
+
+        Symmetric to emit_agent_message_chunk. Display-only: thoughts are
+        NOT fed back into the LLM history (MessageSubscriber ignores them).
+        """
+        self.emit("agent_thought_chunk", {
+            "type": "text",
+            "text": text,
+        })
+
     def emit_tool_call(self, tool_call_id: str, name: str, args: dict) -> None:
         self._tool_calls += 1
         self.emit("tool_call", {
@@ -186,6 +197,10 @@ class EventHub:
     def on_text_line(self, text: str) -> None:
         """Emit agent_message_chunk event."""
         self.emit_agent_message_chunk(text)
+
+    def on_thought_line(self, text: str) -> None:
+        """Emit agent_thought_chunk event."""
+        self.emit_agent_thought_chunk(text)
 
     def on_session_end(self, stop_reason: str) -> None:
         self.emit_result(stop_reason)
@@ -248,6 +263,9 @@ class LogSubscriber:
             return self._prompt_summary(data)
         if event_type == "agent_message_chunk":
             return data.get("text", "")
+        if event_type == "agent_thought_chunk":
+            # Prefix so the debug log distinguishes thinking from the response
+            return f"💭 {data.get('text', '')}"
         if event_type == "tool_call":
             return self._tool_call_summary(data)
         if event_type == "tool_call_update":
@@ -371,6 +389,11 @@ class FeedOutputSubscriber:
             text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
             if text:
                 self._file.write(text + "\n")
+                self._file.flush()
+        elif event_type == "agent_thought_chunk":
+            text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
+            if text:
+                self._file.write(f"💭 {text}\n")
                 self._file.flush()
         elif event_type == "tool_call":
             tid = data.get("toolCallId", "")

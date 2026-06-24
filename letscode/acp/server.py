@@ -535,6 +535,16 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             return h.update_agent_message_text(text + "\n")
         return None
 
+    if type_ == "agent_thought_chunk":
+        # Reasoning/thinking output (e.g. GLM reasoning_content)
+        if "text" in data and "type" in data:
+            text = data.get("text", "")
+        else:
+            text = data.get("content", {}).get("text", "")
+        if text:
+            return h.update_agent_thought_text(text + "\n")
+        return None
+
     if type_ == "session/prompt":
         # Input event — not translated to ACP
         return None
