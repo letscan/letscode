@@ -20,5 +20,10 @@ def main() -> None:
         help="Path to ACP server log file (debug logs)",
         default=None,
     )
+    parser.add_argument(
+        "--show-stat",
+        help="Append a token/timing summary as a markdown quote to each turn",
+        action="store_true",
+    )
     args = parser.parse_args()
-    run_acp_server(args.config, log_path=args.log)
+    run_acp_server(args.config, log_path=args.log, show_stat=args.show_stat)

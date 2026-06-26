@@ -114,7 +114,8 @@ class EventHub:
                   max_turns: int, preset: str, sandbox: bool,
                   tools: list[str], mcp_servers: dict | None = None,
                   skills: list[str] | None = None,
-                  rules: dict | None = None) -> None:
+                  rules: dict | None = None,
+                  context_window: int | None = None) -> None:
         self._start_time = time.monotonic()
         data: dict = {
             "agent": "letscode",
@@ -133,6 +134,8 @@ class EventHub:
             data["skills"] = skills
         if rules:
             data["rules"] = rules
+        if context_window is not None:
+            data["contextWindow"] = context_window
         self.emit("init", data)
 
     def emit_prompt(self, prompt_blocks: list[dict] | None = None,

@@ -62,7 +62,7 @@ async def run_agent(
         hub.emit_init(
             model=config.model, cwd=os.getcwd(), max_tokens=config.max_tokens,
             max_turns=max_turns or 0, preset=config.preset, sandbox=config.sandbox,
-            tools=tool_names, rules=rules_dict,
+            tools=tool_names, rules=rules_dict, context_window=config.context_window,
         )
         hub.emit_prompt(prompt_blocks=prompt_blocks)
 

@@ -469,3 +469,169 @@ class TestStreamRetry:
             consume_stream(_Client(), "m", [], 100, max_retries=2)
         # 1 initial + 2 retries = 3 total attempts
         assert calls["n"] == 3
+
+
+class TestContextWindowConfig:
+    """ModelConfig carries a context_window; config entries can set it."""
+
+    def test_context_window_field_default_none(self):
+        from letscode.config import ModelConfig
+
+        cfg = ModelConfig(model="m")
+        assert cfg.context_window is None
+
+    def test_context_window_loaded_from_config(self, tmp_path):
+        from letscode.config import load_config
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "default_model": "m1",
+            "models": [{
+                "model": "m1",
+                "api_key": "k",
+                "base_url": "http://x",
+                "context_window": 200000,
+            }],
+        }))
+        cfg, _ = load_config(str(config_file), "m1")
+        assert cfg.context_window == 200000
+
+    def test_context_window_absent_yields_none(self, tmp_path):
+        from letscode.config import load_config
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "default_model": "m1",
+            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x"}],
+        }))
+        cfg, _ = load_config(str(config_file), "m1")
+        assert cfg.context_window is None
+
+
+class TestEmitInitContextWindow:
+    """emit_init surfaces contextWindow in the init event when provided."""
+
+    def test_init_carries_context_window(self):
+        from letscode.events import EventHub, set_hub
+
+        hub = EventHub()
+        set_hub(hub)
+        captured = []
+        hub.subscribe(lambda t, d: captured.append((t, d)))
+        hub.emit_init(model="m", cwd=".", max_tokens=100, max_turns=3,
+                      preset="default", sandbox=True, tools=[], context_window=200000)
+        init = next(d for t, d in captured if t == "init")
+        assert init["contextWindow"] == 200000
+
+    def test_init_omits_context_window_when_none(self):
+        from letscode.events import EventHub, set_hub
+
+        hub = EventHub()
+        set_hub(hub)
+        captured = []
+        hub.subscribe(lambda t, d: captured.append((t, d)))
+        hub.emit_init(model="m", cwd=".", max_tokens=100, max_turns=3,
+                      preset="default", sandbox=True, tools=[])
+        init = next(d for t, d in captured if t == "init")
+        assert "contextWindow" not in init
+
+
+class TestStatFormatting:
+    """The show-stat quote and token/duration helpers format correctly."""
+
+    def test_human_tokens(self):
+        from letscode.acp.server import _human_tokens
+
+        assert _human_tokens(0) == "0"
+        assert _human_tokens(450) == "450"
+        assert _human_tokens(2700) == "2.7k"
+        assert _human_tokens(100000) == "100.0k"
+
+    def test_human_duration(self):
+        from letscode.acp.server import _human_duration
+
+        assert _human_duration(8.3) == "8s"
+        assert _human_duration(76.4) == "1m16s"
+        assert _human_duration(122.0) == "2m2s"
+
+    def test_format_stat_quote(self):
+        from letscode.acp.server import _format_stat_quote
+
+        quote = _format_stat_quote(3, 2700, 76.4)
+        assert quote.strip() == "> Turn 3 | 2.7k tokens | 1m16s"
+
+
+class TestModelContextWindowLookup:
+    """LetscodeAgent resolves context_window from loaded config entries."""
+
+    def test_lookup_returns_configured_value(self, tmp_path):
+        from letscode.acp.server import LetscodeAgent
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "default_model": "m1",
+            "models": [
+                {"model": "m1", "api_key": "k", "base_url": "http://x", "context_window": 200000},
+                {"model": "m2", "api_key": "k", "base_url": "http://x", "context_window": 32768},
+            ],
+        }))
+        agent = LetscodeAgent(str(config_file))
+        assert agent._model_context_window("m1") == 200000
+        assert agent._model_context_window("m2") == 32768
+
+    def test_lookup_returns_none_when_unset(self, tmp_path):
+        from letscode.acp.server import LetscodeAgent
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "default_model": "m1",
+            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x"}],
+        }))
+        agent = LetscodeAgent(str(config_file))
+        assert agent._model_context_window("m1") is None
+
+    def test_lookup_falls_back_to_default_model(self, tmp_path):
+        from letscode.acp.server import LetscodeAgent
+
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "default_model": "m1",
+            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x", "context_window": 131072}],
+        }))
+        agent = LetscodeAgent(str(config_file))
+        # No model_id passed -> uses default_model
+        assert agent._model_context_window(None) == 131072
+
+
+class TestLastPromptTokens:
+    """_last_prompt_tokens recovers the last turn's context fill from a log."""
+
+    def test_returns_last_result_prompt_tokens(self):
+        from letscode.acp.server import _last_prompt_tokens
+
+        events = [
+            {"type": "prompt", "data": []},
+            {"type": "result", "data": {"usage": {"prompt_tokens": 4500}}},
+            {"type": "prompt", "data": []},
+            {"type": "result", "data": {"usage": {"prompt_tokens": 8000}}},
+        ]
+        assert _last_prompt_tokens(events) == 8000
+
+    def test_returns_none_when_no_result(self):
+        from letscode.acp.server import _last_prompt_tokens
+
+        assert _last_prompt_tokens([{"type": "prompt", "data": []}]) is None
+
+    def test_returns_none_when_result_has_no_usage(self):
+        from letscode.acp.server import _last_prompt_tokens
+
+        events = [{"type": "result", "data": {"stopReason": "end_turn"}}]
+        assert _last_prompt_tokens(events) is None
+
+    def test_handles_legacy_session_result_type(self):
+        from letscode.acp.server import _last_prompt_tokens
+
+        events = [
+            {"type": "session/result", "data": {"usage": {"prompt_tokens": 3000}}},
+        ]
+        assert _last_prompt_tokens(events) == 3000

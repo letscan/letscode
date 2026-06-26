@@ -12,7 +12,11 @@ from acp import run_agent
 from .server import LetscodeAgent
 
 
-def run_acp_server(config_path: str | None = None, log_path: str | None = None) -> None:
+def run_acp_server(
+    config_path: str | None = None,
+    log_path: str | None = None,
+    show_stat: bool = False,
+) -> None:
     """Run the ACP server over stdio using the SDK."""
     if log_path is None:
         log_dir = Path.home() / ".letscode" / "logs"
@@ -29,7 +33,7 @@ def run_acp_server(config_path: str | None = None, log_path: str | None = None) 
         datefmt="%H:%M:%S",
     )
 
-    agent = LetscodeAgent(config_path)
+    agent = LetscodeAgent(config_path, show_stat=show_stat)
     logger = logging.getLogger("letscode-acp")
     acp_version = importlib.metadata.version("agent-client-protocol")
     logger.info("Starting letscode-acp (agent-client-protocol SDK v%s)", acp_version)

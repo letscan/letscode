@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from acp.schema import (
     SessionModelState,
     ToolCallLocation,
     Usage,
+    UsageUpdate,
 )
 
 from .. import __version__
@@ -44,6 +46,30 @@ logger = logging.getLogger("letscode-acp")
 _DEFAULT_MAX_TURNS = 30
 
 
+def _human_tokens(n: int) -> str:
+    """Format a token count compactly, e.g. 2700 -> '2.7k'."""
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _human_duration(seconds: float) -> str:
+    """Format an elapsed duration, e.g. 76s -> '1m16s', 45s -> '45s'."""
+    s = int(round(seconds))
+    if s >= 60:
+        m, s = divmod(s, 60)
+        return f"{m}m{s}s"
+    return f"{s}s"
+
+
+def _format_stat_quote(big_turn: int, tokens: int, elapsed: float) -> str:
+    """Build the per-turn stat summary as a markdown blockquote line.
+
+    Example: '> Turn 3 | 2.7k tokens | 1m16s'
+    """
+    return f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens | {_human_duration(elapsed)}\n"
+
+
 def _get_modes() -> list[dict]:
     from ..sandbox import list_presets
     return list_presets()
@@ -52,8 +78,9 @@ def _get_modes() -> list[dict]:
 class LetscodeAgent:
     """ACP agent implementation backed by the letscode CLI subprocess."""
 
-    def __init__(self, config_path: str | None = None):
+    def __init__(self, config_path: str | None = None, *, show_stat: bool = False):
         self.config_path = config_path
+        self.show_stat = show_stat
         self._conn: AgentSideConnection | None = None
         self.sessions: dict[str, Session] = {}
         self._agent_proc: asyncio.subprocess.Process | None = None
@@ -62,6 +89,12 @@ class LetscodeAgent:
         self._models: list[dict] = []
         self._default_model: str | None = None
         self._session_commands: dict[str, SlashCommandRegistry] = {}
+        # Per-session cumulative prompt_tokens (last big turn) for stat deltas.
+        self._session_prompt_tokens: dict[str, int] = {}
+        # Per-session big-turn counter (each prompt() call = one big turn).
+        self._session_big_turn: dict[str, int] = {}
+        # Per-session context window size (captured from the init event).
+        self._session_context_window: dict[str, int] = {}
         self._load_models()
 
     def _load_models(self) -> None:
@@ -71,6 +104,17 @@ class LetscodeAgent:
             logger.info("Loaded %d models, default=%s", len(self._models), self._default_model)
         except Exception as e:
             logger.warning("Failed to load models: %s", e)
+
+    def _model_context_window(self, model_id: str | None) -> int | None:
+        """Look up a model's context_window from the loaded config entries."""
+        target = model_id or self._default_model
+        if not target:
+            return None
+        for m in self._models:
+            if m.get("model") == target:
+                cw = m.get("context_window")
+                return cw if isinstance(cw, int) and cw > 0 else None
+        return None
 
     def _build_commands(self, cwd: str) -> SlashCommandRegistry:
         """Create a per-session command registry with builtins + cwd-specific skills."""
@@ -151,6 +195,26 @@ class LetscodeAgent:
         except Exception:
             logger.debug("Failed to send commands update for session %s", session_id[:12], exc_info=True)
 
+    async def _deferred_send_usage(self, session_id: str) -> None:
+        """Send an initial usage_update so the UI gauge shows on session start.
+
+        On new sessions used=0; on loaded sessions it reflects the last turn's
+        cumulative prompt_tokens (the current context fill), recovered from the
+        session log by load_session.
+        """
+        await asyncio.sleep(0.2)
+        size = self._session_context_window.get(session_id)
+        if not size or self._conn is None:
+            return
+        used = self._session_prompt_tokens.get(session_id, 0)
+        try:
+            await self._conn.session_update(
+                session_id=session_id,
+                update=UsageUpdate(session_update="usage_update", used=used, size=size),
+            )
+        except Exception:
+            logger.debug("Failed to send initial usage for session %s", session_id[:12], exc_info=True)
+
     async def initialize(self, protocol_version: int, **kwargs: Any) -> InitializeResponse:
         logger.info("initialize(protocol_version=%d)", protocol_version)
         return InitializeResponse(
@@ -172,7 +236,13 @@ class LetscodeAgent:
         save_session(session)
         self.sessions[session.session_id] = session
         self._session_commands[session.session_id] = self._build_commands(cwd)
+        # Seed context window from config so the initial usage_update can fire
+        # before any letscode subprocess runs.
+        cw = self._model_context_window(session.model)
+        if cw:
+            self._session_context_window[session.session_id] = cw
         asyncio.create_task(self._deferred_send_commands(session.session_id))
+        asyncio.create_task(self._deferred_send_usage(session.session_id))
 
         return NewSessionResponse(
             session_id=session.session_id,
@@ -263,11 +333,14 @@ class LetscodeAgent:
         cwd = session.cwd if os.path.isdir(session.cwd) else os.getcwd()
 
         exit_code: int | None = None
+        start_time = time.monotonic()
+        context_window = self._session_context_window.get(session_id)
+        turn_prompt_tokens = 0
         try:
             self._agent_proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
             )
             logger.info("Subprocess PID=%d started", self._agent_proc.pid)
@@ -286,18 +359,25 @@ class LetscodeAgent:
                 except json.JSONDecodeError:
                     continue
 
+                if event.get("type") == "init":
+                    cw = event.get("data", {}).get("contextWindow")
+                    if isinstance(cw, int) and cw > 0:
+                        context_window = cw
+                        self._session_context_window[session_id] = cw
+                    continue
+                if event.get("type") in ("session/prompt", "prompt"):
+                    continue
                 if event.get("type") in ("result", "session/result"):
                     result_data = event.get("data", {})
                     stop_reason = result_data.get("stopReason", "end_turn")
                     if result_data.get("usage"):
                         usage_data = result_data["usage"]
+                        turn_prompt_tokens = usage_data.get("prompt_tokens", 0)
                         usage = Usage(
                             input_tokens=usage_data.get("prompt_tokens", 0),
                             output_tokens=usage_data.get("completion_tokens", 0),
                             total_tokens=usage_data.get("total_tokens", 0),
                         )
-                    continue
-                if event.get("type") in ("session/prompt", "prompt", "init"):
                     continue
                 if event.get("type") == "error":
                     error_msg = event.get("data", {}).get("message", "unknown error")
@@ -344,6 +424,37 @@ class LetscodeAgent:
         if exit_code:
             raise RequestError.internal_error({"details": f"Agent exited with code {exit_code}"})
 
+        elapsed = time.monotonic() - start_time
+
+        # Context-window usage update (drives a fill gauge in the client UI).
+        if context_window and self._conn is not None and turn_prompt_tokens:
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=UsageUpdate(
+                        session_update="usage_update",
+                        used=turn_prompt_tokens, size=context_window,
+                    ),
+                )
+            except Exception:
+                logger.warning("Failed to emit usage update", exc_info=True)
+
+        # Per-turn stat quote appended as an agent message (markdown blockquote).
+        if self.show_stat and self._conn is not None:
+            prev = self._session_prompt_tokens.get(session_id, 0)
+            delta = max(turn_prompt_tokens - prev, 0)
+            self._session_prompt_tokens[session_id] = turn_prompt_tokens
+            big_turn = self._session_big_turn.get(session_id, 0) + 1
+            self._session_big_turn[session_id] = big_turn
+            quote = _format_stat_quote(big_turn, delta, elapsed)
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=h.update_agent_message_text(quote),
+                )
+            except Exception:
+                logger.warning("Failed to emit stat quote", exc_info=True)
+
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -379,7 +490,16 @@ class LetscodeAgent:
 
         self.sessions[session_id] = session
         self._session_commands[session_id] = self._build_commands(cwd)
+        cw = self._model_context_window(session.model)
+        if cw:
+            self._session_context_window[session_id] = cw
+        # Recover the last turn's cumulative prompt_tokens so the initial
+        # usage_update reflects the current context fill (not 0).
+        last_tokens = _last_prompt_tokens(events)
+        if last_tokens:
+            self._session_prompt_tokens[session_id] = last_tokens
         asyncio.create_task(self._deferred_send_commands(session_id))
+        asyncio.create_task(self._deferred_send_usage(session_id))
 
         return LoadSessionResponse(
             config_options=self._build_config_options(session),
@@ -427,6 +547,11 @@ class LetscodeAgent:
             session.mode = str(value)
         elif config_id == "model":
             session.model = str(value)
+            # Context window may differ per model; refresh the cached size.
+            cw = self._model_context_window(session.model)
+            if cw:
+                self._session_context_window[session_id] = cw
+                asyncio.create_task(self._deferred_send_usage(session_id))
         else:
             return None
 
@@ -469,6 +594,23 @@ def _read_log_events(log_path: str) -> list[dict]:
     except FileNotFoundError:
         pass
     return events
+
+
+def _last_prompt_tokens(events: list[dict]) -> int | None:
+    """Extract the last result event's cumulative prompt_tokens from events.
+
+    This represents the current context fill after the last completed turn,
+    used to seed the usage gauge when resuming a session.
+    """
+    for event in reversed(events):
+        if event.get("type") in ("result", "session/result"):
+            usage = event.get("data", {}).get("usage")
+            if usage:
+                tokens = usage.get("prompt_tokens")
+                if isinstance(tokens, int) and tokens > 0:
+                    return tokens
+            return None
+    return None
 
 
 # ── Event translation ──

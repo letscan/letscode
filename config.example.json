@@ -5,7 +5,8 @@
       "model": "glm-5-turbo",
       "api_key": "YOUR_API_KEY_HERE",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "max_tokens": 200000
+      "max_tokens": 200000,
+      "context_window": 200000
     }
   ],
   "mcp_servers": {
