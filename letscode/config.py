@@ -11,6 +11,7 @@ class ModelConfig:
     api_key: str | None = None
     base_url: str = "https://api.openai.com/v1"
     max_tokens: int = 16384
+    max_retries: int = 3
     preset: str = "default"
     sandbox: bool = True
     verbose: bool = False
@@ -87,6 +88,7 @@ def load_config(
             api_key=entry.get("api_key"),
             base_url=entry.get("base_url", "https://api.openai.com/v1"),
             max_tokens=max_tokens,
+            max_retries=entry.get("max_retries", 3),
             preset=sandbox_preset,
             sandbox=sandbox,
             rules=rules,

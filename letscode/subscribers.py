@@ -322,6 +322,8 @@ class CliOutputSubscriber:
             self._on_tool_call(data)
         elif event_type == "tool_call_update":
             self._on_tool_call_update(data)
+        elif event_type == "result":
+            self._on_result(data)
 
     def _on_agent_message_chunk(self, data: dict) -> None:
         # Always write text to stdout — this is the main LLM output
@@ -346,6 +348,20 @@ class CliOutputSubscriber:
             from .tools._display import _dim
             sys.stderr.write(_dim(f"💭 {text}") + "\n")
             sys.stderr.flush()
+
+    def _on_result(self, data: dict) -> None:
+        # Print a token-usage summary to stderr (stays out of stdout pipes).
+        usage = data.get("usage")
+        if not usage:
+            return
+        from .tools._display import _dim
+        summary = (
+            f"📊 tokens: {usage.get('prompt_tokens', 0)} in / "
+            f"{usage.get('completion_tokens', 0)} out / "
+            f"{usage.get('total_tokens', 0)} total"
+        )
+        sys.stderr.write(_dim(summary) + "\n")
+        sys.stderr.flush()
 
     def _on_tool_call(self, data: dict) -> None:
         tid = data.get("toolCallId", "")

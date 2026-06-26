@@ -89,7 +89,10 @@ async def run_agent(
             stream_result = consume_stream(
                 client, config.model, messages, config.max_tokens,
                 tools=all_tools, on_line=on_line, on_thought_line=on_thought_line,
+                max_retries=config.max_retries,
             )
+            if hub and stream_result.usage:
+                hub.record_usage(stream_result.usage)
         except Exception as e:
             print(f"\nAPI error: {e}", file=sys.stderr)
             if hub:

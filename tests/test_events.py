@@ -238,6 +238,24 @@ def _fake_chunk(*, content=None, reasoning=None):
 
     chunk = _Chunk()
     chunk.choices = [choice]
+    chunk.usage = None
+    return chunk
+
+
+def _fake_usage_chunk(usage):
+    """Build a final chunk carrying usage with empty choices list."""
+    class _Usage:
+        def __init__(self, d):
+            self.prompt_tokens = d.get("prompt_tokens", 0)
+            self.completion_tokens = d.get("completion_tokens", 0)
+            self.total_tokens = d.get("total_tokens", 0)
+
+    class _Chunk:
+        pass
+
+    chunk = _Chunk()
+    chunk.choices = []
+    chunk.usage = _Usage(usage)
     return chunk
 
 
@@ -258,3 +276,196 @@ class _FakeClient:
                 def _gen():
                     yield from cls._chunks
                 return _gen()
+
+
+class TestUsageCapture:
+    """consume_stream captures usage from the final empty-choices chunk."""
+
+    def test_usage_captured_in_stream_result(self):
+        from letscode.stream import consume_stream
+
+        client = _FakeClient([
+            _fake_chunk(content="hello"),
+            _fake_usage_chunk({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
+        ])
+        result = consume_stream(client, "m", [], 100)
+        assert result.usage is not None
+        assert result.usage["prompt_tokens"] == 10
+        assert result.usage["completion_tokens"] == 5
+        assert result.usage["total_tokens"] == 15
+
+    def test_no_usage_chunk_yields_none(self):
+        from letscode.stream import consume_stream
+
+        client = _FakeClient([_fake_chunk(content="hello")])
+        result = consume_stream(client, "m", [], 100)
+        assert result.usage is None
+
+
+class TestEventHubUsageAccumulation:
+    """EventHub accumulates usage across turns and surfaces it in emit_result."""
+
+    def test_record_usage_accumulates(self):
+        from letscode.events import EventHub, set_hub
+
+        hub = EventHub()
+        set_hub(hub)
+        hub.record_usage({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        hub.record_usage({"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28})
+        assert hub._usage == {"prompt_tokens": 30, "completion_tokens": 13, "total_tokens": 43}
+
+    def test_emit_result_includes_usage_when_nonzero(self, tmp_path):
+        from letscode.events import EventHub, set_hub
+
+        hub = EventHub()
+        set_hub(hub)
+        captured = []
+        hub.subscribe(lambda t, d: captured.append((t, d)))
+        hub.record_usage({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        hub.emit_result("end_turn")
+
+        result_event = next((t, d) for t, d in captured if t == "result")
+        assert result_event[1]["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+    def test_emit_result_omits_usage_when_zero(self, tmp_path):
+        from letscode.events import EventHub, set_hub
+
+        hub = EventHub()
+        set_hub(hub)
+        captured = []
+        hub.subscribe(lambda t, d: captured.append((t, d)))
+        hub.emit_result("end_turn")
+
+        result_event = next((t, d) for t, d in captured if t == "result")
+        assert "usage" not in result_event[1]
+
+
+class TestCliOutputResultUsage:
+    """CliOutputSubscriber prints a token summary on the result event."""
+
+    def test_result_with_usage_prints_to_stderr(self, capsys):
+        from letscode.subscribers import CliOutputSubscriber
+
+        sub = CliOutputSubscriber(verbose=False)
+        sub("result", {"stopReason": "end_turn", "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        captured = capsys.readouterr()
+        assert "100" in captured.err
+        assert "150" in captured.err
+
+    def test_result_without_usage_silent(self, capsys):
+        from letscode.subscribers import CliOutputSubscriber
+
+        sub = CliOutputSubscriber(verbose=False)
+        sub("result", {"stopReason": "end_turn"})
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+
+class TestStreamRetry:
+    """consume_stream retries transient errors and propagates non-retryable ones."""
+
+    @staticmethod
+    def _make_response():
+        """Build a minimal stand-in for httpx.Response that the OpenAI SDK
+        exception constructors accept (they access response.request)."""
+        class _Req:
+            url = "https://example.com/chat"
+            headers = {}
+
+        class _Resp:
+            status_code = 429
+            headers = {}
+            request = _Req()
+
+            def json(self):
+                return {}
+
+            def text(self):
+                return ""
+
+        return _Resp()
+
+    def test_retry_on_rate_limit_then_success(self, monkeypatch):
+        from letscode import stream as stream_mod
+        from letscode.stream import consume_stream
+        from openai import RateLimitError
+
+        # Avoid real sleeping during the backoff
+        monkeypatch.setattr(stream_mod.time, "sleep", lambda _: None)
+
+        calls = {"n": 0}
+
+        class _Client:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**_):
+                        def _gen():
+                            calls["n"] += 1
+                            if calls["n"] == 1:
+                                raise RateLimitError(
+                                    message="rate limited",
+                                    response=self._make_response(),
+                                    body=None,
+                                )
+                            yield _fake_chunk(content="recovered")
+                        return _gen()
+
+        result = consume_stream(_Client(), "m", [], 100, max_retries=2)
+        assert calls["n"] == 2
+        assert result.text_content == "recovered"
+
+    def test_non_retryable_propagates_immediately(self, monkeypatch):
+        from letscode import stream as stream_mod
+        from letscode.stream import consume_stream
+        from openai import BadRequestError
+
+        monkeypatch.setattr(stream_mod.time, "sleep", lambda _: None)
+
+        calls = {"n": 0}
+
+        class _Client:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**_):
+                        calls["n"] += 1
+                        def _gen():
+                            raise BadRequestError(
+                                message="bad request",
+                                response=self._make_response(),
+                                body=None,
+                            )
+                        return _gen()
+
+        with pytest.raises(BadRequestError):
+            consume_stream(_Client(), "m", [], 100, max_retries=3)
+        assert calls["n"] == 1  # no retries
+
+    def test_retry_exhausted_raises_last_error(self, monkeypatch):
+        from letscode import stream as stream_mod
+        from letscode.stream import consume_stream
+        from openai import RateLimitError
+
+        monkeypatch.setattr(stream_mod.time, "sleep", lambda _: None)
+
+        calls = {"n": 0}
+
+        class _Client:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**_):
+                        def _gen():
+                            calls["n"] += 1
+                            raise RateLimitError(
+                                message="rate limited",
+                                response=self._make_response(),
+                                body=None,
+                            )
+                        return _gen()
+
+        with pytest.raises(RateLimitError):
+            consume_stream(_Client(), "m", [], 100, max_retries=2)
+        # 1 initial + 2 retries = 3 total attempts
+        assert calls["n"] == 3

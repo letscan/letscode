@@ -32,6 +32,7 @@ from acp.schema import (
     SessionModeState,
     SessionModelState,
     ToolCallLocation,
+    Usage,
 )
 
 from .. import __version__
@@ -272,6 +273,7 @@ class LetscodeAgent:
             logger.info("Subprocess PID=%d started", self._agent_proc.pid)
 
             stop_reason = "end_turn"
+            usage: Usage | None = None
             error_msg: str | None = None
             pending_tool_inputs: dict[str, dict] = {}
 
@@ -285,7 +287,15 @@ class LetscodeAgent:
                     continue
 
                 if event.get("type") in ("result", "session/result"):
-                    stop_reason = event.get("data", {}).get("stopReason", "end_turn")
+                    result_data = event.get("data", {})
+                    stop_reason = result_data.get("stopReason", "end_turn")
+                    if result_data.get("usage"):
+                        usage_data = result_data["usage"]
+                        usage = Usage(
+                            input_tokens=usage_data.get("prompt_tokens", 0),
+                            output_tokens=usage_data.get("completion_tokens", 0),
+                            total_tokens=usage_data.get("total_tokens", 0),
+                        )
                     continue
                 if event.get("type") in ("session/prompt", "prompt", "init"):
                     continue
@@ -334,7 +344,7 @@ class LetscodeAgent:
         if exit_code:
             raise RequestError.internal_error({"details": f"Agent exited with code {exit_code}"})
 
-        return PromptResponse(stop_reason=stop_reason)
+        return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         if self._agent_proc is not None and session_id == self._current_session_id:

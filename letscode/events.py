@@ -82,6 +82,7 @@ class EventHub:
         self._start_time: float | None = None
         self._turns = 0
         self._tool_calls = 0
+        self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     def subscribe(self, handler: Callable[[str, dict], None]) -> None:
         self._subscribers.append(handler)
@@ -98,6 +99,12 @@ class EventHub:
 
     def set_turns(self, turns: int) -> None:
         self._turns = turns
+
+    def record_usage(self, usage: dict) -> None:
+        """Accumulate per-turn token usage across the session."""
+        self._usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        self._usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        self._usage["total_tokens"] += usage.get("total_tokens", 0)
 
     # ------------------------------------------------------------------
     # Convenience methods (high-level API used by agent.py)
@@ -191,6 +198,8 @@ class EventHub:
         }
         if self._start_time is not None:
             data["duration_ms"] = int((time.monotonic() - self._start_time) * 1000)
+        if self._usage["total_tokens"] > 0:
+            data["usage"] = dict(self._usage)
         self.emit("result", data)
         self.close()
 
