@@ -16,3 +16,6 @@ config.json
 .letscode/
 scratch/
 acp-zed.log
+
+# MCP server runtime artifacts
+.playwright-mcp/
