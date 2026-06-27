@@ -242,7 +242,8 @@ class LetscodeAgent:
         if cw:
             self._session_context_window[session.session_id] = cw
         asyncio.create_task(self._deferred_send_commands(session.session_id))
-        asyncio.create_task(self._deferred_send_usage(session.session_id))
+        # usage_update is emitted via set_config_option(model), which the
+        # client always sends right after new_session — no need to send here.
 
         return NewSessionResponse(
             session_id=session.session_id,
@@ -499,7 +500,8 @@ class LetscodeAgent:
         if last_tokens:
             self._session_prompt_tokens[session_id] = last_tokens
         asyncio.create_task(self._deferred_send_commands(session_id))
-        asyncio.create_task(self._deferred_send_usage(session_id))
+        # usage_update is emitted via set_config_option(model), which the
+        # client always sends right after load_session — no need to send here.
 
         return LoadSessionResponse(
             config_options=self._build_config_options(session),
@@ -551,7 +553,11 @@ class LetscodeAgent:
             cw = self._model_context_window(session.model)
             if cw:
                 self._session_context_window[session_id] = cw
-                asyncio.create_task(self._deferred_send_usage(session_id))
+            # The client sends set_config_option(model) right after every
+            # new/load session, so this is the single place to emit the
+            # initial usage_update — covers both new (used=0) and loaded
+            # (used=<last turn>) sessions.
+            asyncio.create_task(self._deferred_send_usage(session_id))
         else:
             return None
 
@@ -697,12 +703,20 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             return h.update_agent_thought_text(text + "\n")
         return None
 
-    if type_ == "session/prompt":
-        # Input event — not translated to ACP
-        return None
-
-    if type_ == "prompt":
-        # Input event — not translated to ACP
+    if type_ in ("session/prompt", "prompt"):
+        # User input event. Current "prompt" events carry the block list
+        # directly in data; legacy "session/prompt" events wrap it as
+        # data.prompt. Reuse the shared _prompt_text so image-block path
+        # references and text blocks are reconstructed identically to the
+        # live message path.
+        if type_ == "prompt":
+            blocks = data if isinstance(data, list) else []
+        else:  # session/prompt (legacy)
+            blocks = data.get("prompt", []) if isinstance(data, dict) else []
+        from ..subscribers import _prompt_text
+        text = _prompt_text(blocks)
+        if text:
+            return h.update_user_message(h.text_block(text))
         return None
 
     if type_ == "tool_call":
@@ -851,32 +865,3 @@ def _build_completed_content(
 
     return None
 
-
-def _blocks_to_user_messages(blocks: list[dict]) -> list[Any] | None:
-    """Convert serialized content blocks to a list of UserMessageChunk."""
-
-    def _to_update(b: dict):
-        t = b.get("type")
-        if t == "text":
-            return h.update_user_message(h.text_block(b.get("text", "")))
-        if t == "resource_link":
-            return h.update_user_message(h.resource_link_block(
-                name=b.get("name", ""),
-                uri=b.get("uri", ""),
-            ))
-        if t == "resource":
-            res = b.get("resource", {})
-            text = res.get("text", res.get("uri", ""))
-            return h.update_user_message(h.text_block(text))
-        if t == "image":
-            mime = b.get("mime_type")
-            if not mime:
-                return None
-            return h.update_user_message(h.image_block(b.get("data", ""), mime_type=mime, uri=b.get("uri")))
-        if "text" in b:
-            return h.update_user_message(h.text_block(b["text"]))
-        return None
-
-    updates = [_to_update(b) for b in blocks]
-    updates = [u for u in updates if u is not None]
-    return updates if updates else None

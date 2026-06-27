@@ -51,6 +51,14 @@ async def _async_main(args):
         else:
             prompt_blocks = [{"type": "text", "text": args.prompt}]
 
+        # Spill image blocks to local files and rewrite them as path refs.
+        # Keeps the prompt model-agnostic: the agent (or an MCP/skill tool)
+        # reads the file rather than the LLM needing inline image support.
+        from .prompt_blocks import materialize_blocks, default_images_dir
+        prompt_blocks = materialize_blocks(
+            prompt_blocks, images_dir=default_images_dir(),
+        )
+
         # --feed X --append is sugar for --feed X --output X --event-stream
         if args.append and args.feed and not args.output:
             args.output = args.feed

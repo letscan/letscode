@@ -15,3 +15,4 @@ config.json
 # Event stream logs
 .letscode/
 scratch/
+acp-zed.log

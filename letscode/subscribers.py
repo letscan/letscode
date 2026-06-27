@@ -125,6 +125,33 @@ def _resolve_result(data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Prompt text reconstruction (shared by live + replay paths)
+# ---------------------------------------------------------------------------
+
+
+def _prompt_text(blocks: list) -> str:
+    """Join a prompt's blocks into the user message text.
+
+    Text blocks concatenate directly. Image blocks are normally rewritten to
+    path references before reaching this layer (see prompt_blocks.py); to keep
+    legacy/old-log replay robust, a stray raw image block degrades to its
+    ``uri`` as text rather than silently disappearing.
+    """
+    parts: list[str] = []
+    for b in blocks or []:
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "text":
+            parts.append(b.get("text", ""))
+        elif t == "image":
+            uri = b.get("uri")
+            if uri:
+                parts.append(f"Image: {uri}")
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # MessageSubscriber
 # ---------------------------------------------------------------------------
 
@@ -165,7 +192,7 @@ class MessageSubscriber:
     def _on_prompt(self, data: dict) -> None:
         self._flush_turn()
         if isinstance(data, list):
-            text = "".join(b.get("text", "") for b in data if b.get("type") == "text")
+            text = _prompt_text(data)
         else:
             text = ""
         self.messages.append({"role": "user", "content": text})
@@ -174,7 +201,7 @@ class MessageSubscriber:
         # Legacy format
         self._flush_turn()
         blocks = data.get("prompt", [])
-        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+        text = _prompt_text(blocks)
         self.messages.append({"role": "user", "content": text})
 
     def _on_agent_message_chunk(self, data: dict) -> None:
