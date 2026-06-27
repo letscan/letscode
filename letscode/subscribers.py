@@ -125,17 +125,82 @@ def _resolve_result(data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompt text reconstruction (shared by live + replay paths)
+# Prompt message construction (shared by live + replay paths)
 # ---------------------------------------------------------------------------
 
 
-def _prompt_text(blocks: list) -> str:
-    """Join a prompt's blocks into the user message text.
+def _prompt_message(blocks: list) -> dict:
+    """Build the OpenAI user message for a prompt's content blocks.
 
-    Text blocks concatenate directly. Image blocks are normally rewritten to
-    path references before reaching this layer (see prompt_blocks.py); to keep
-    legacy/old-log replay robust, a stray raw image block degrades to its
-    ``uri`` as text rather than silently disappearing.
+    Each block becomes a content part **in its original position**, so the
+    ordering the caller expressed (e.g. ``--text a --image x --text b``) is
+    preserved for the model. Adjacent text blocks are merged into one text
+    part. Two image forms are handled identically:
+
+    - ``image``: inline base64 ``data`` (ACP client original, old logs).
+    - ``image_ref``: a path reference (spilled by the ACP server); the file is
+      read on demand here and turned into the same ``image_url`` part.
+
+    When the prompt carries at least one image, ``content`` is a list of
+    parts; for a text-only prompt it stays a plain string (unchanged from the
+    legacy path, avoiding needless churn for non-vision models).
+    """
+    parts: list[dict] = []
+    has_image = False
+    pending_text: list[str] = []
+
+    def _flush_text() -> None:
+        if pending_text:
+            parts.append({"type": "text", "text": "".join(pending_text)})
+            pending_text.clear()
+
+    for b in blocks or []:
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "text":
+            pending_text.append(b.get("text", ""))
+        elif t == "image":
+            data = b.get("data")
+            if not data:
+                continue
+            _flush_text()
+            mime = b.get("mime_type") or b.get("mimeType") or "image/png"
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{data}"},
+            })
+            has_image = True
+        elif t == "image_ref":
+            p = b.get("path")
+            if not p:
+                continue
+            try:
+                from .image_store import read_as_data_url
+                url = read_as_data_url(Path(p), b.get("mime_type"))
+            except OSError:
+                # File missing (e.g. old temp file) — skip rather than crash.
+                continue
+            _flush_text()
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+            has_image = True
+
+    if has_image:
+        _flush_text()
+        return {"role": "user", "content": parts}
+    return {"role": "user", "content": "".join(pending_text)}
+
+
+def blocks_text_summary(blocks: list) -> str:
+    """Flatten a prompt's blocks into a single text string for logging/compaction.
+
+    Text blocks concatenate. Image blocks leave a short trace so logs and
+    ``/compact`` transcripts record that an image was present (and where to
+    find it) without the LLM's actual message — which still carries a real
+    ``image_url`` via :func:`_prompt_message` — being affected:
+
+    - ``image_ref`` -> ``[image: <path>]``
+    - ``image``      -> ``[image: <mime> <N>B]`` (base64 length, approximate)
     """
     parts: list[str] = []
     for b in blocks or []:
@@ -144,10 +209,11 @@ def _prompt_text(blocks: list) -> str:
         t = b.get("type")
         if t == "text":
             parts.append(b.get("text", ""))
+        elif t == "image_ref":
+            parts.append(f"[image: {b.get('path', '?')}]")
         elif t == "image":
-            uri = b.get("uri")
-            if uri:
-                parts.append(f"Image: {uri}")
+            mime = b.get("mime_type") or b.get("mimeType") or "image"
+            parts.append(f"[image: {mime} {len(b.get('data', ''))}B]")
     return "".join(parts)
 
 
@@ -192,17 +258,15 @@ class MessageSubscriber:
     def _on_prompt(self, data: dict) -> None:
         self._flush_turn()
         if isinstance(data, list):
-            text = _prompt_text(data)
+            self.messages.append(_prompt_message(data))
         else:
-            text = ""
-        self.messages.append({"role": "user", "content": text})
+            self.messages.append({"role": "user", "content": ""})
 
     def _on_session_prompt(self, data: dict) -> None:
         # Legacy format
         self._flush_turn()
         blocks = data.get("prompt", [])
-        text = _prompt_text(blocks)
-        self.messages.append({"role": "user", "content": text})
+        self.messages.append(_prompt_message(blocks))
 
     def _on_agent_message_chunk(self, data: dict) -> None:
         if self._tool_order:

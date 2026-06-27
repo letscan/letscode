@@ -45,7 +45,7 @@ letscode-acp [-c config.json]
 uv run python -m letscode "prompt"
 ```
 
-No test suite exists yet.
+Tests run with `uv run pytest` (pytest is in the `dev` dependency group). Tests live under `tests/` and follow a class-grouped pytest style (see `tests/test_prompt.py`).
 
 ## Architecture
 

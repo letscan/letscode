@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from .subscribers import blocks_text_summary
+
 _SKILL_HEADER_PREFIX = "[Skill:"
 
 
@@ -105,13 +107,13 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
 
         if type_ == "session/prompt":
             blocks = data.get("prompt", [])
-            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            text = blocks_text_summary(blocks)
             if text:
                 parts.append(f"User: {text}\n")
 
         elif type_ == "prompt":
             if isinstance(data, list):
-                text = "".join(b.get("text", "") for b in data if b.get("type") == "text")
+                text = blocks_text_summary(data)
             else:
                 text = ""
             if text:
