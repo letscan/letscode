@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 from .agent import run_agent
@@ -45,19 +46,8 @@ async def _async_main(args):
         if args.no_mcp:
             mcp_servers = {}
 
-        # Build prompt_blocks (always structured)
-        if args.prompt_format == "json":
-            prompt_blocks = json.loads(args.prompt)
-        else:
-            prompt_blocks = [{"type": "text", "text": args.prompt}]
-
-        # Spill image blocks to local files and rewrite them as path refs.
-        # Keeps the prompt model-agnostic: the agent (or an MCP/skill tool)
-        # reads the file rather than the LLM needing inline image support.
-        from .prompt_blocks import materialize_blocks, default_images_dir
-        prompt_blocks = materialize_blocks(
-            prompt_blocks, images_dir=default_images_dir(),
-        )
+        # Build prompt_blocks from --text/--image flags + optional positional.
+        prompt_blocks = _build_prompt_blocks(args)
 
         # --feed X --append is sugar for --feed X --output X --event-stream
         if args.append and args.feed and not args.output:
@@ -159,6 +149,48 @@ async def _async_main(args):
         os.chdir(original_cwd)
 
 
+def _build_prompt_blocks(args) -> list[dict]:
+    """Assemble ordered prompt content blocks from CLI input.
+
+    When ``--text``/``--image`` are present, they are laid out in the exact
+    order they appear on the command line (scanned from ``sys.argv`` — argparse's
+    ``append`` lists lose that interleaving), and a positional argument, if any,
+    is appended as a trailing text block. With no flags, the positional
+    argument alone becomes the single text block (the common ``letscode "..."``
+    path, unchanged).
+
+    ``--image`` paths are stored verbatim (resolved to absolute) as
+    ``image_ref`` blocks; the file is read lazily when the OpenAI message is
+    built (see ``subscribers._prompt_message``).
+    """
+    has_flags = bool(args.text or args.image)
+    if not has_flags:
+        # Common path: a single text prompt.
+        return [{"type": "text", "text": args.prompt or ""}]
+
+    blocks: list[dict] = []
+    i = 0
+    argv = sys.argv[1:]
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--text" and i + 1 < len(argv):
+            blocks.append({"type": "text", "text": argv[i + 1]})
+            i += 2
+        elif tok == "--image" and i + 1 < len(argv):
+            blocks.append({
+                "type": "image_ref",
+                "path": str(Path(argv[i + 1]).resolve()),
+            })
+            i += 2
+        else:
+            i += 1
+
+    # Positional argument is always the trailing text block.
+    if args.prompt:
+        blocks.append({"type": "text", "text": args.prompt})
+    return blocks
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="letscode",
@@ -245,10 +277,18 @@ def main():
         default=None,
     )
     parser.add_argument(
-        "--prompt-format",
-        help="Prompt format: text (default) or json (serialized content blocks)",
-        choices=["text", "json"],
-        default="text",
+        "--text",
+        help="Prompt text block (repeatable; combined with --image in the "
+             "order given on the command line)",
+        action="append",
+        default=[],
+    )
+    parser.add_argument(
+        "--image",
+        help="Path to an image file to include as an image block "
+             "(repeatable; interleaves with --text in command-line order)",
+        action="append",
+        default=[],
     )
     args = parser.parse_args()
 
@@ -259,8 +299,8 @@ def main():
             print(f"{m['model']}{marker}")
         return
 
-    if not args.prompt:
-        parser.error("prompt is required when not using --models")
+    if not args.prompt and not args.text and not args.image:
+        parser.error("prompt is required: provide a positional argument, --text, or --image")
 
     rc = asyncio.run(_async_main(args))
     if rc:

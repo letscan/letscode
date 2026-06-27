@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .subscribers import RESULT_THRESHOLD, StreamBuffer
+from .subscribers import RESULT_THRESHOLD, StreamBuffer, blocks_text_summary
 from .tools._display import format_call, format_result
 
 
@@ -296,13 +296,9 @@ class LogSubscriber:
     def _prompt_summary(self, data) -> str:
         if isinstance(data, dict):
             # prompt_blocks form
-            return " ".join(
-                b.get("text", "") for b in data if isinstance(b, dict) and b.get("type") == "text"
-            )
+            return blocks_text_summary(data)
         if isinstance(data, list):
-            return " ".join(
-                b.get("text", "") for b in data if isinstance(b, dict) and b.get("type") == "text"
-            )
+            return blocks_text_summary(data)
         return str(data)
 
     def _tool_call_summary(self, data: dict) -> str:

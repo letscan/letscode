@@ -307,6 +307,13 @@ class LetscodeAgent:
             title = next((b.get("text", "") for b in serialized_blocks if b.get("type") == "text"), "")
             session.title = title[:120] if title else None
 
+        # Spill inline image blocks to local files so they travel to the
+        # subprocess as short path refs (image_ref) instead of huge base64
+        # blobs in argv (which would blow past ARG_MAX for real screenshots).
+        # The CLI reads them back into inline image_url parts when building
+        # the OpenAI message, so vision models see the image unchanged.
+        cli_blocks = _spill_image_blocks(serialized_blocks, session.cwd)
+
         cmd = [sys.executable, "-m", "letscode", "--event-stream", "--no-mcp"]
         if self.config_path:
             cmd.extend(["--config", self.config_path])
@@ -315,14 +322,19 @@ class LetscodeAgent:
         if session.mode != "default":
             cmd.extend(["--preset", session.mode])
         cmd.extend(["--max-turns", str(_DEFAULT_MAX_TURNS)])
-        cmd.append("--prompt-format")
-        cmd.append("json")
 
         from .session import _sessions_dir
         log_path = _sessions_dir(session.cwd) / f"{session_id}.jsonl"
 
         cmd.extend(["--feed", str(log_path), "--append"])
-        cmd.append(json.dumps(serialized_blocks, ensure_ascii=False))
+
+        # Translate blocks to --text/--image argv tokens, preserving order.
+        for b in cli_blocks:
+            t = b.get("type")
+            if t == "text" and b.get("text") is not None:
+                cmd.extend(["--text", b["text"]])
+            elif t == "image_ref" and b.get("path"):
+                cmd.extend(["--image", b["path"]])
 
         session.log_path = str(log_path)
         save_session(session)
@@ -584,6 +596,66 @@ class LetscodeAgent:
         return {}
 
 
+def _spill_image_blocks(blocks: list[dict], cwd: str) -> list[dict]:
+    """Replace inline ``image`` blocks with on-disk ``image_ref`` blocks.
+
+    The base64 payload is written to ``<cwd>/.letscode/images/<hash>.<ext>``
+    (content-addressed, idempotent) and the block becomes a short path
+    reference. Non-image blocks pass through unchanged. Images that fail to
+    spill (bad payload) are dropped with a text note so the prompt isn't
+    silently corrupted.
+    """
+    from ..image_store import spill_image, default_images_dir
+
+    images_dir = Path(cwd) / ".letscode" / "images" if cwd else default_images_dir()
+    out: list[dict] = []
+    for b in blocks:
+        if isinstance(b, dict) and b.get("type") == "image":
+            data = b.get("data")
+            mime = b.get("mime_type") or b.get("mimeType") or "image/png"
+            if not data:
+                out.append({"type": "text", "text": "[image unavailable]"})
+                continue
+            try:
+                path = spill_image(data, mime, images_dir=images_dir)
+            except (ValueError, OSError):
+                out.append({"type": "text", "text": "[image unavailable]"})
+                continue
+            out.append({"type": "image_ref", "path": str(path), "mime_type": mime})
+        else:
+            out.append(b)
+    return out
+
+
+def _resolve_image_for_ui(block: dict):
+    """Turn an image/image_ref block into an ACP image UserMessageChunk.
+
+    Inline ``image`` blocks pass their base64 straight through. ``image_ref``
+    blocks are read from disk and re-encoded to base64 so the ACP UI renders
+    the image on session load. Returns ``None`` if the image can't be resolved.
+    """
+    t = block.get("type")
+    if t == "image":
+        mime = block.get("mime_type") or block.get("mimeType")
+        if mime and block.get("data"):
+            return h.image_block(block["data"], mime_type=mime, uri=block.get("uri"))
+        return None
+    if t == "image_ref":
+        path = block.get("path")
+        if not path:
+            return None
+        try:
+            from ..image_store import read_as_data_url
+            url = read_as_data_url(Path(path), block.get("mime_type"))
+        except OSError:
+            return None
+        # data URL -> pull the base64 payload back out for the ACP block
+        header, _, b64 = url.partition(",")
+        mime = header.split(";")[0].split(":", 1)[-1] if ":" in header else "image/png"
+        return h.image_block(b64, mime_type=mime, uri=path)
+    return None
+
+
 def _read_log_events(log_path: str) -> list[dict]:
     """Read and parse events from a JSONL log file (blocking I/O)."""
     events: list[dict] = []
@@ -706,18 +778,31 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
     if type_ in ("session/prompt", "prompt"):
         # User input event. Current "prompt" events carry the block list
         # directly in data; legacy "session/prompt" events wrap it as
-        # data.prompt. Reuse the shared _prompt_text so image-block path
-        # references and text blocks are reconstructed identically to the
-        # live message path.
+        # data.prompt. Emit each block as a user_message_chunk so resumed
+        # sessions show the same input as the live path (text + images).
         if type_ == "prompt":
             blocks = data if isinstance(data, list) else []
         else:  # session/prompt (legacy)
             blocks = data.get("prompt", []) if isinstance(data, dict) else []
-        from ..subscribers import _prompt_text
-        text = _prompt_text(blocks)
-        if text:
-            return h.update_user_message(h.text_block(text))
-        return None
+        updates: list = []
+        text_parts: list[str] = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            if t == "text" and b.get("text"):
+                text_parts.append(b["text"])
+            elif t in ("image", "image_ref"):
+                # Flush any accumulated text first, preserving block order.
+                if text_parts:
+                    updates.append(h.update_user_message(h.text_block("".join(text_parts))))
+                    text_parts = []
+                resolved = _resolve_image_for_ui(b)
+                if resolved is not None:
+                    updates.append(h.update_user_message(resolved))
+        if text_parts:
+            updates.append(h.update_user_message(h.text_block("".join(text_parts))))
+        return updates if updates else None
 
     if type_ == "tool_call":
         tc_id = data.get("toolCallId", "")
