@@ -14,3 +14,4 @@ config.json
 
 # Event stream logs
 .letscode/
+scratch/
