@@ -431,6 +431,12 @@ class LetscodeAgent:
             self._agent_proc = None
             self._current_session_id = None
 
+        # A user-initiated cancel SIGKILLs the subprocess (exit -9); that's the
+        # expected outcome, not an error. Skip the error/exit-code checks so the
+        # prompt() returns cleanly with stop_reason="cancelled".
+        if self._cancelled:
+            return PromptResponse(stop_reason="cancelled")
+
         if error_msg:
             raise RequestError.internal_error({"details": error_msg})
 

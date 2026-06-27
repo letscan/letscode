@@ -136,20 +136,35 @@ async def _async_main(args):
                 model = feed_model or model
             system_prompt = build_system_prompt(model)
 
-            rc = await run_agent(
-                prompt_blocks=prompt_blocks,
-                system_prompt=system_prompt,
-                config=config,
-                max_turns=args.max_turns,
-                feed_path=args.feed,
-                tool_runner=tool_runner,
-                msg_sub=msg_sub,
-            )
+            try:
+                rc = await run_agent(
+                    prompt_blocks=prompt_blocks,
+                    system_prompt=system_prompt,
+                    config=config,
+                    max_turns=args.max_turns,
+                    feed_path=args.feed,
+                    tool_runner=tool_runner,
+                    msg_sub=msg_sub,
+                )
+            except asyncio.CancelledError:
+                # Ctrl-C: the task was cancelled mid-run. Acknowledge immediately
+                # so the user knows the interrupt was received (before the brief
+                # teardown below), then re-raise so finally runs cleanup.
+                print("\nInterrupted, shutting down…", file=sys.stderr)
+                raise
             if not args.event_stream:
                 print()  # final newline
             return rc
         finally:
-            await mcp.disconnect_all()
+            # Tear down. On Ctrl-C, asyncio cancels the task and runs this block,
+            # but mcp.disconnect_all() awaits MCP child shutdown and can hang for
+            # tens of seconds — which is why users had to press Ctrl-C twice.
+            # Guard it so an interrupt shuts down promptly; orphaned MCP children
+            # are reaped by the OS. hub.close() just closes file handles (fast).
+            try:
+                await asyncio.wait_for(mcp.disconnect_all(), timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
             hub.close()
             set_manager(None)
             set_hub(None)
@@ -310,6 +325,14 @@ def main():
     if not args.prompt and not args.text and not args.image:
         parser.error("prompt is required: provide a positional argument, --text, or --image")
 
-    rc = asyncio.run(_async_main(args))
+    try:
+        rc = asyncio.run(_async_main(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ctrl-C: asyncio.run cancelled the task and ran finally blocks
+        # (MCP disconnect with timeout, hub.close). Depending on where the
+        # interrupt landed, asyncio.run surfaces either KeyboardInterrupt or a
+        # bare CancelledError (a BaseException, not caught by `except Exception`)
+        # — catch both and exit quietly without dumping a traceback.
+        return
     if rc:
         raise SystemExit(rc)

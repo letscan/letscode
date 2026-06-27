@@ -1,5 +1,6 @@
 """ToolRunner — tool dispatch with security guardrails."""
 
+import asyncio
 import inspect
 import json
 from collections.abc import AsyncGenerator
@@ -134,12 +135,18 @@ class ToolRunner:
         elif name == "Agent":
             kwargs.update(self._agent_config)
 
-        result = executor(args, **kwargs)
-
-        if inspect.isasyncgen(result):
-            async for event in result:
+        # Dispatch: async-generator executors (Bash) run on the loop so their
+        # streaming events come through; sync executors run in a thread. Some
+        # sync tools (grep/glob/agent) block on subprocess.run; running them in
+        # a thread keeps the event loop responsive so Ctrl-C cancellation isn't
+        # delayed by seconds waiting on the child process.
+        if inspect.isasyncgenfunction(executor):
+            async for event in executor(args, **kwargs):
                 yield event
-        elif isinstance(result, ToolResult):
+            return
+
+        result = await asyncio.to_thread(executor, args, **kwargs)
+        if isinstance(result, ToolResult):
             yield result
         else:
             yield ToolResult(content=str(result), success=True)
