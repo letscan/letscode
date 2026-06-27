@@ -154,7 +154,7 @@ async def _async_main(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="letscode",
-        description="Lightweight agent harness compatible with letscode",
+        description="Lightweight Python AI agent harness",
     )
     parser.add_argument(
         "prompt",

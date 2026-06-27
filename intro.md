@@ -2,7 +2,7 @@
 
 ## 概述
 
-letscode 是一个轻量级的 Python AI 编程代理（Agent）框架（v0.1.0），实现了 **ReAct 模式**的 Agent 循环，通过 OpenAI 兼容的 API 接入大语言模型，并提供完整的 **LLM 调用 → 工具执行 → 结果反馈** 循环，使模型能够自主完成软件工程任务。架构设计参考 letscode 的工具调用协议和系统提示词。
+letscode 是一个轻量级的 Python AI 编程代理（Agent）框架（v0.1.0），实现了 **ReAct 模式**的 Agent 循环，通过 OpenAI 兼容的 API 接入大语言模型，并提供完整的 **LLM 调用 → 工具执行 → 结果反馈** 循环，使模型能够自主完成软件工程任务。
 
 - **语言**: Python 3.11+
 - **核心依赖**: `openai>=1.0`、`mcp>=1.27.0`
@@ -20,7 +20,7 @@ letscode/                          # 项目根目录
 ├── uv.lock                        # 依赖锁定文件
 ├── config.json                    # 模型配置（api_key, base_url, max_tokens, mcp_servers）
 ├── config.example.json            # 配置文件示例（供用户参考）
-├── AGENTS.md                      # letscode 工作区指令
+├── AGENTS.md                      # AI agent 工作区指令
 ├── README.md                      # （空）
 ├── intro.md                       # 本文件
 ├── docs/
@@ -30,7 +30,7 @@ letscode/                          # 项目根目录
 ├── .letscode/                     # 运行时目录（.gitignore）
 │   └── logs/                      # JSONL 事件日志
 ├── .claude/
-│   ├── settings.local.json        # letscode 本地设置
+│   ├── settings.local.json        # 客户端本地设置
 │   └── skills/
 │       └── hello/
 │           └── SKILL.md           # 示例技能（问候模板）
@@ -187,7 +187,7 @@ letscode/                          # 项目根目录
 - `_get_shell_name()`: 解析 `$SHELL` 环境变量识别 zsh/bash
 - `_get_os_version()`: 通过 `platform.system()` + `platform.release()` 获取
 
-提示词来源：从 letscode 的 `src/constants/prompts.ts` 提取（external-user 分支）。
+提示词来源：参考主流 Agent 框架的系统提示词结构，适配 letscode。
 
 ### 6. MCP 集成 (`mcp/client.py`, 155 行)
 
@@ -275,7 +275,7 @@ letscode/                          # 项目根目录
 - 加载 `.claude/skills/` 目录下的 `SKILL.md` 技能文件
 - 支持 YAML frontmatter 解析（`---` 分隔的元数据块），提取 `description`、`name` 等字段
 - 模板变量 `$ARGUMENTS` 和 `${ARGUMENTS}` 替换：将用户传入的参数替换到技能提示词中
-- 支持递归搜索项目级（`.claude/skills/`）、父目录级（向上查到 `.git`）和用户级（`~/.claude/skills/`）的技能路径
+- 支持递归搜索项目级（`.claude/skills/`）、父目录级（向上查到 `.git`）和用户级（`~/.claude/skills/`）的技能路径（`.claude/skills/` 为跨客户端通用约定）
 - 技能本质上是预定义的提示词模板，加载后注入到 Agent 的对话上下文中
 - `get_skill_list()`: 返回可用技能的 `{name, description}` 列表
 
@@ -356,4 +356,4 @@ agent.py::run_agent()
 10. **技能系统**: 基于 Markdown 的技能模板，支持 YAML 元数据和 `$ARGUMENTS` 变量扩展，支持项目级/父目录级/用户级三层搜索
 11. **JSONL 事件流**: 新增 `EventEmitter` 模块，完整记录会话的 prompt、消息片段、工具调用全生命周期（pending → in_progress → completed/failed）、错误和结果；支持 `--event-stream` 模式将事件流输出到 stdout，便于 IDE/前端集成；日志持久化到 `.letscode/logs/` 目录，包含 ACP 兼容的工具类型映射
 12. **简洁实现**: 核心逻辑约 2100 行 Python，核心依赖仅 `openai` 和 `mcp`
-13. **Prompt 工程借鉴**: 系统提示词从 letscode 官方 TypeScript 实现提取，保留其成熟的 Agent 行为指导
+13. **Prompt 工程借鉴**: 系统提示词参考主流 Agent 框架，保留其成熟的 Agent 行为指导

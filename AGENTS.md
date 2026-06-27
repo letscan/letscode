@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to letscode (letscan.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents working with code in this repository.
 
 ## Project Overview
 
@@ -99,7 +99,7 @@ Three-level access control:
 CLI flags: `--preset safe|default|risk`, `--no-sandbox` to disable entirely.
 
 ### ACP Server (`acp/`)
-Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via the `letscode-acp` entry point. The server communicates over stdio with a client (e.g. letscode, IDE extensions).
+Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via the `letscode-acp` entry point. The server communicates over stdio with a client (e.g. IDE extensions).
 
 - **`server.py`** (`LetscodeAgent`): Implements ACP protocol methods — `initialize`, `new_session`, `prompt`, `cancel`, `load_session`, `list_sessions`, `set_session_mode`, `set_config_option`, `close_session`. The `prompt` method spawns `letscode --event-stream --prompt-format json` as a subprocess and translates its JSONL events into ACP `SessionUpdate` objects via `_translate_event`.
 - **`commands.py`**: Slash command registry (`SlashCommandRegistry`) with built-in commands `/new` (clear context), `/compact` (LLM-summarized context compression), `/undo` (roll back last turn). `/compact` preserves skill activation events through compaction. Commands are dispatched before the agent subprocess; results are sent as ACP updates.
@@ -116,7 +116,7 @@ JSONL event emitter for structured output. Always writes to `.letscode/logs/{tim
 - **`feed_util.py`**: Shared event log manipulation utilities — `read_events`, `write_events`, `split_turns` (splits at `session/prompt` boundaries), `extract_conversation_text` (generates readable transcript for LLM summarization), `extract_skill_activations` (finds skill prompt events that must survive compaction), `last_agent_text`.
 
 ### System Prompt (`prompt.py`)
-8-section prompt built from letscode's `src/constants/prompts.ts`. The `_env_section` dynamically injects CWD, git status, platform, shell, and OS version at runtime.
+8-section prompt. The `_env_section` dynamically injects CWD, git status, platform, shell, and OS version at runtime.
 
 ## Key Design Patterns
 

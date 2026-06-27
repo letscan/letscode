@@ -10,7 +10,7 @@ $ letscode "add a /health endpoint to app.py"
 
 - **Lightweight** — ~2K lines of Python, three dependencies (`openai`, `mcp`, `agent-client-protocol`). No vector databases, no framework lock-in.
 - **CLI-first** — Runs in your terminal. Pipe prompts in, read structured JSONL out. Fits into any workflow.
-- **ACP-ready** — Ships `letscode-acp`, an [Agent Client Protocol](https://github.com/AI-Utils/agent-client-protocol) server for IDE and client integration (letscode, VS Code extensions, etc.).
+- **ACP-ready** — Ships `letscode-acp`, an [Agent Client Protocol](https://github.com/AI-Utils/agent-client-protocol) server for IDE and client integration (VS Code extensions, etc.).
 
 ## Features
 
@@ -69,7 +69,7 @@ export OPENAI_API_KEY="YOUR_API_KEY"
 export OPENAI_BASE_URL="https://open.bigmodel.cn/api/coding/paas/v4"
 ```
 
-Works with any OpenAI-compatible API (GPT, Gemini, GLM, local models, etc.).
+Works with any OpenAI-compatible API (GPT, Gemini, GLM, DeepSeek, Qwen, local models, etc.).
 
 ### 2. Run
 
