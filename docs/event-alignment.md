@@ -116,7 +116,7 @@ agent 启动 → 加载 config/rules/tools/mcp/skills → 事件
     "preset": "default",
     "sandbox": true,
     "tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "Agent", "mcp__playwright__browser"],
-    "mcpServers": {"playwright": {"command": "npx", "args": ["@playwright/mcp"]}},
+    "mcpServers": {"playwright": {"command": "npx", "args": ["-y", "@playwright/mcp@latest"]}},
     "skills": ["hello", "code-review"],
     "rules": {"allowRead": ["**"], "denyRead": [".ssh/**"], "allowCmd": ["git", "ls"]}
   }
