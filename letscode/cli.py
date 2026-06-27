@@ -49,6 +49,14 @@ async def _async_main(args):
         # Build prompt_blocks from --text/--image flags + optional positional.
         prompt_blocks = _build_prompt_blocks(args)
 
+        # Validate image paths up front: a typo silently drops the image from
+        # the message (the LLM then answers "I don't see any image"), which is
+        # hard to debug. Fail loudly instead.
+        for b in prompt_blocks:
+            if isinstance(b, dict) and b.get("type") == "image_ref":
+                if not Path(b["path"]).exists():
+                    raise SystemExit(f"Image not found: {b['path']}")
+
         # --feed X --append is sugar for --feed X --output X --event-stream
         if args.append and args.feed and not args.output:
             args.output = args.feed

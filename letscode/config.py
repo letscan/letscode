@@ -79,8 +79,18 @@ def load_config(
                 entry = m
                 break
 
-    if entry is None and models:
-        entry = models[0]
+    if entry is None:
+        if target:
+            # An explicit model id was given but isn't in the config. Failing
+            # loudly here beats silently falling back to models[0] — which has
+            # masked typos (e.g. sending a vision prompt to a text-only model).
+            available = ", ".join(m.get("model", "?") for m in models) or "(none)"
+            raise SystemExit(
+                f"Model {target!r} not found in config. Available: {available}"
+            )
+        elif models:
+            # No model specified at all — use the first entry as the default.
+            entry = models[0]
 
     if entry:
         max_tokens = min(entry.get("max_tokens", 16384), 131072)
