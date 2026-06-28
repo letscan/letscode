@@ -63,18 +63,24 @@ The agent loop (`run_agent`) streams LLM responses, extracts tool calls, execute
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
 
-`config.json` schema:
+`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key` belong to the provider, `max_tokens`/`context_window` to the model):
 ```json
 {
   "default_model": "model-id",
-  "models": [{"model": "...", "api_key": "...", "base_url": "...", "max_tokens": 200000}],
+  "providers": {
+    "<provider>": {
+      "base_url": "...",
+      "api_key": "...",
+      "models": [{"model": "...", "max_tokens": 200000, "context_window": 200000}]
+    }
+  },
   "mcp_servers": {"name": {"command": "...", "args": [...]} or {"url": "..."}},
   "preset": "safe|default|risk",
   "sandbox": true,
   "rules": {"allowRead": [...], "denyRead": [...], "allowWrite": [...], "denyWrite": [...], "allowCmd": [...], "denyCmd": [...]}
 }
 ```
-Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
+Internally `config.py` flattens `providers` into per-model dicts (merging each provider's `base_url`/`api_key` into its models), so `list_models()`/`load_config()` and their callers see the same flat per-model shape. Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
 
 ### Tool System (`tools/`)
 Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(args) -> str`. Registration is in `tools/__init__.py`. Available tools: Bash, Read, Write, Edit, Glob, Grep, Skill, Agent.

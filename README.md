@@ -51,16 +51,19 @@ Edit `config.json` with your API key:
 ```json
 {
   "default_model": "glm-5-turbo",
-  "models": [
-    {
-      "model": "glm-5-turbo",
-      "api_key": "YOUR_API_KEY",
+  "providers": {
+    "zhipu": {
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "max_tokens": 200000
+      "api_key": "YOUR_API_KEY",
+      "models": [
+        { "model": "glm-5-turbo", "max_tokens": 200000 }
+      ]
     }
-  ]
+  }
 }
 ```
+
+`base_url` and `api_key` belong to the provider; multiple models under the same provider share them.
 
 Environment variables override the config file:
 

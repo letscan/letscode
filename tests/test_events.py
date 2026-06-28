@@ -486,12 +486,13 @@ class TestContextWindowConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "default_model": "m1",
-            "models": [{
-                "model": "m1",
-                "api_key": "k",
-                "base_url": "http://x",
-                "context_window": 200000,
-            }],
+            "providers": {
+                "p": {
+                    "base_url": "http://x",
+                    "api_key": "k",
+                    "models": [{"model": "m1", "context_window": 200000}],
+                }
+            },
         }))
         cfg, _ = load_config(str(config_file), "m1")
         assert cfg.context_window == 200000
@@ -502,7 +503,9 @@ class TestContextWindowConfig:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "default_model": "m1",
-            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x"}],
+            "providers": {
+                "p": {"base_url": "http://x", "api_key": "k", "models": [{"model": "m1"}]},
+            },
         }))
         cfg, _ = load_config(str(config_file), "m1")
         assert cfg.context_window is None
@@ -570,10 +573,15 @@ class TestModelContextWindowLookup:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "default_model": "m1",
-            "models": [
-                {"model": "m1", "api_key": "k", "base_url": "http://x", "context_window": 200000},
-                {"model": "m2", "api_key": "k", "base_url": "http://x", "context_window": 32768},
-            ],
+            "providers": {
+                "p": {
+                    "base_url": "http://x", "api_key": "k",
+                    "models": [
+                        {"model": "m1", "context_window": 200000},
+                        {"model": "m2", "context_window": 32768},
+                    ],
+                }
+            },
         }))
         agent = LetscodeAgent(str(config_file))
         assert agent._model_context_window("m1") == 200000
@@ -585,7 +593,9 @@ class TestModelContextWindowLookup:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "default_model": "m1",
-            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x"}],
+            "providers": {
+                "p": {"base_url": "http://x", "api_key": "k", "models": [{"model": "m1"}]},
+            },
         }))
         agent = LetscodeAgent(str(config_file))
         assert agent._model_context_window("m1") is None
@@ -596,7 +606,12 @@ class TestModelContextWindowLookup:
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps({
             "default_model": "m1",
-            "models": [{"model": "m1", "api_key": "k", "base_url": "http://x", "context_window": 131072}],
+            "providers": {
+                "p": {
+                    "base_url": "http://x", "api_key": "k",
+                    "models": [{"model": "m1", "context_window": 131072}],
+                }
+            },
         }))
         agent = LetscodeAgent(str(config_file))
         # No model_id passed -> uses default_model
