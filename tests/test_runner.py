@@ -13,8 +13,17 @@ from letscode.tools.runner import ToolRunner
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    """Run an async coroutine synchronously in tests."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run an async coroutine synchronously in tests.
+
+    Uses a fresh event loop each call. ``asyncio.get_event_loop()`` is
+    deprecated and, once any other test has run ``asyncio.run``, can hand back
+    a closed loop — so we create a new one explicitly and close it after.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 async def _collect(runner, name, arguments):

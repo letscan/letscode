@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from letscode.config import load_config, list_models
+from letscode.config import load_config, list_models, load_vision_model_id
 
 
 def _write_config(tmp_path, providers, default_model=None):
@@ -124,6 +124,37 @@ class TestProviderFlattening:
         # Flat dicts carry merged provider fields + model-level fields.
         a = next(m for m in models if m["model"] == "a")
         assert a["base_url"] == "u1" and a["api_key"] == "k1" and a["context_window"] == 5000
+
+
+class TestVisionFields:
+    """vision flag on models + vision_model id at the top level."""
+
+    def test_vision_defaults_false(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a"}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.vision is False
+
+    def test_vision_true_loaded(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a", "vision": True}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.vision is True
+
+    def test_load_vision_model_id(self, tmp_path):
+        import json as _json
+        p = tmp_path / "config.json"
+        p.write_text(_json.dumps({
+            "vision_model": "glm-4.6v-flash",
+            "providers": {"p": _provider("u", "k", [{"model": "m"}])},
+        }))
+        assert load_vision_model_id(str(p)) == "glm-4.6v-flash"
+
+    def test_load_vision_model_id_none_when_unset(self, tmp_path):
+        path = _write_config(tmp_path, {"p": _provider("u", "k", [{"model": "m"}])})
+        assert load_vision_model_id(path) is None
 
 
 class TestListModels:

@@ -63,15 +63,16 @@ The agent loop (`run_agent`) streams LLM responses, extracts tool calls, execute
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
 
-`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key` belong to the provider, `max_tokens`/`context_window` to the model):
+`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key` belong to the provider, `max_tokens`/`context_window`/`vision` to the model):
 ```json
 {
   "default_model": "model-id",
+  "vision_model": "vision-capable-model-id",
   "providers": {
     "<provider>": {
       "base_url": "...",
       "api_key": "...",
-      "models": [{"model": "...", "max_tokens": 200000, "context_window": 200000}]
+      "models": [{"model": "...", "max_tokens": 200000, "context_window": 200000, "vision": false}]
     }
   },
   "mcp_servers": {"name": {"command": "...", "args": [...]} or {"url": "..."}},
@@ -80,6 +81,7 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
   "rules": {"allowRead": [...], "denyRead": [...], "allowWrite": [...], "denyWrite": [...], "allowCmd": [...], "denyCmd": [...]}
 }
 ```
+**Vision proxy**: `vision: false` on a model + a top-level `vision_model` set → image prompts are first routed through the vision model for text descriptions, spliced back into the prompt (`[Image-N]` markers + appended descriptions), so text-only models can reason about image content. `vision: true` models receive images inline. `call_llm()` (`llm.py`) is the shared single-shot LLM call used here and by future one-off uses (title/summary generation, compaction).
 Internally `config.py` flattens `providers` into per-model dicts (merging each provider's `base_url`/`api_key` into its models), so `list_models()`/`load_config()` and their callers see the same flat per-model shape. Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
 
 ### Tool System (`tools/`)

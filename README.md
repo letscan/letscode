@@ -65,6 +65,25 @@ Edit `config.json` with your API key:
 
 `base_url` and `api_key` belong to the provider; multiple models under the same provider share them.
 
+Add `"vision": true` to vision-capable models. For a text-only main model, set a top-level `"vision_model"` — image prompts are then routed through it for descriptions, letting any model handle images:
+
+```json
+{
+  "default_model": "glm-5-turbo",
+  "vision_model": "glm-4.6v-flash",
+  "providers": {
+    "zhipu": {
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key": "YOUR_API_KEY",
+      "models": [
+        { "model": "glm-5-turbo", "max_tokens": 200000, "vision": false },
+        { "model": "glm-4.6v-flash", "max_tokens": 32768, "vision": true }
+      ]
+    }
+  }
+}
+```
+
 Environment variables override the config file:
 
 ```bash

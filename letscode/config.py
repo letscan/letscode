@@ -17,6 +17,7 @@ class ModelConfig:
     sandbox: bool = True
     verbose: bool = False
     rules: dict | None = None
+    vision: bool = False
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -42,6 +43,7 @@ def _load_config_file(config_path: str | None) -> tuple:
     """
     models: list[dict] = []
     default_model: str | None = None
+    vision_model: str | None = None
     mcp_servers: dict[str, McpServerConfig] = {}
     sandbox_preset: str = "default"
     sandbox: bool = True
@@ -51,13 +53,14 @@ def _load_config_file(config_path: str | None) -> tuple:
         with open(config_path) as f:
             data = json.load(f)
         default_model = data.get("default_model")
+        vision_model = data.get("vision_model")
         mcp_servers = data.get("mcp_servers", {})
         sandbox_preset = data.get("preset", "default")
         sandbox = data.get("sandbox", True)
         rules = data.get("rules")
         models = _flatten_providers(data.get("providers", {}))
 
-    return models, default_model, mcp_servers, sandbox_preset, sandbox, rules
+    return models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules
 
 
 def _flatten_providers(providers: dict) -> list[dict]:
@@ -92,6 +95,12 @@ def list_models(config_path: str | None) -> tuple[list[dict], str | None]:
     return models, default_model
 
 
+def load_vision_model_id(config_path: str | None) -> str | None:
+    """Return the configured ``vision_model`` id (top-level), or None."""
+    _, _, vision_model, *_ = _load_config_file(config_path)
+    return vision_model
+
+
 def load_config(
     config_path: str | None, model_id: str | None = None,
 ) -> tuple[ModelConfig, dict[str, McpServerConfig]]:
@@ -114,7 +123,7 @@ def load_config(
         }
     }
     """
-    models, default_model, mcp_servers, sandbox_preset, sandbox, rules = _load_config_file(config_path)
+    models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules = _load_config_file(config_path)
 
     target = model_id or default_model
 
@@ -150,6 +159,7 @@ def load_config(
             preset=sandbox_preset,
             sandbox=sandbox,
             rules=rules,
+            vision=bool(entry.get("vision", False)),
         )
     elif target:
         cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)

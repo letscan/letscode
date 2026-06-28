@@ -1,5 +1,6 @@
 {
   "default_model": "glm-5-turbo",
+  "vision_model": "glm-4.6v-flash",
   "providers": {
     "zhipu": {
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -8,12 +9,14 @@
         {
           "model": "glm-5-turbo",
           "max_tokens": 200000,
-          "context_window": 200000
+          "context_window": 200000,
+          "vision": false
         },
         {
           "model": "glm-4.6v-flash",
           "max_tokens": 32768,
-          "context_window": 128000
+          "context_window": 128000,
+          "vision": true
         }
       ]
     }
