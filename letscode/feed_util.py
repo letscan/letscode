@@ -91,6 +91,30 @@ def last_agent_text(turn_events: list[dict]) -> str | None:
     return last[:120]
 
 
+def extract_user_prompts(events: list[dict]) -> list[str]:
+    """Collect user prompt texts from a log's prompt/session-prompt events.
+
+    Each prompt event's text blocks are joined into one string per prompt.
+    Used for title generation (user asks only, no agent replies).
+    """
+    prompts: list[str] = []
+    for ev in events:
+        if ev.get("type") not in ("prompt", "session/prompt"):
+            continue
+        data = ev.get("data", {})
+        if ev["type"] == "prompt":
+            blocks = data if isinstance(data, list) else []
+        else:  # session/prompt (legacy)
+            blocks = data.get("prompt", []) if isinstance(data, dict) else []
+        text = "".join(
+            b.get("text", "") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        if text.strip():
+            prompts.append(text.strip())
+    return prompts
+
+
 def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str:
     """Extract a readable text transcript from events for LLM summarization.
 

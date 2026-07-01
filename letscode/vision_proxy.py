@@ -103,6 +103,7 @@ async def rewrite_prompt_for_text_model(
                 system_prompt=_VISION_SYSTEM,
                 model_id=vision_model_id,
                 config_path=config_path,
+                purpose=f"vision-{n}",
             )
             desc = (result.text_content or "").strip()
             if not desc:

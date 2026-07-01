@@ -160,3 +160,32 @@ class TestCallLlm:
                 assert r.tool_calls == tcs
 
         asyncio.run(run())
+
+    def test_extra_body_forwarded(self, tmp_path):
+        # extra_body (e.g. {"enable_thinking": False}) must reach consume_stream_async
+        path = _config_file(tmp_path)
+
+        async def run():
+            with patch("letscode.llm.consume_stream_async", new=AsyncMock(
+                return_value=StreamResult(text_content="ok", tool_calls=[])
+            )) as m:
+                await call_llm(
+                    [{"type": "text", "text": "hi"}],
+                    config_path=path,
+                    extra_body={"enable_thinking": False},
+                )
+                assert m.call_args.kwargs.get("extra_body") == {"enable_thinking": False}
+
+        asyncio.run(run())
+
+    def test_no_extra_body_by_default(self, tmp_path):
+        path = _config_file(tmp_path)
+
+        async def run():
+            with patch("letscode.llm.consume_stream_async", new=AsyncMock(
+                return_value=StreamResult(text_content="ok", tool_calls=[])
+            )) as m:
+                await call_llm([{"type": "text", "text": "hi"}], config_path=path)
+                assert m.call_args.kwargs.get("extra_body") is None
+
+        asyncio.run(run())

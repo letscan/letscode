@@ -234,6 +234,10 @@ def create_builtin_registry() -> SlashCommandRegistry:
     registry.register("new", "清空上下文，开始新对话", _handle_new)
     registry.register("compact", "压缩上下文，生成结构化摘要", _handle_compact)
     registry.register("undo", "回退上一轮操作", _handle_undo)
+    # /rename has no handler here — it is dispatched in server.py (it needs
+    # access to the connection to push a session_info_update and may run async
+    # gen-title). Registered so it shows up in available_commands.
+    registry.register("rename", "重命名会话（无参数时自动生成标题）", handler=None)
     return registry
 
 
