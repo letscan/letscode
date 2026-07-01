@@ -387,22 +387,37 @@ class FeedOutputSubscriber:
     def _write_text(self, event_type: str, data: dict) -> None:
         if event_type != "agent_message_chunk":
             return
-        text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
-        if text:
-            self._file.write(text + "\n")
+        # Flat format carries each stream line as data["text"] (a blank line
+        # is the empty string ""); write it unconditionally so paragraph
+        # breaks survive. Legacy nested format filters empties as before.
+        if "text" in data and "type" in data:
+            self._file.write(data.get("text", "") + "\n")
             self._file.flush()
-
-    def _write_verbose(self, event_type: str, data: dict) -> None:
-        if event_type == "agent_message_chunk":
-            text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
+        else:
+            text = data.get("content", {}).get("text", "")
             if text:
                 self._file.write(text + "\n")
                 self._file.flush()
-        elif event_type == "agent_thought_chunk":
-            text = data.get("text", "") if "text" in data else data.get("content", {}).get("text", "")
-            if text:
-                self._file.write(f"💭 {text}\n")
+
+    def _write_verbose(self, event_type: str, data: dict) -> None:
+        if event_type == "agent_message_chunk":
+            if "text" in data and "type" in data:
+                self._file.write(data.get("text", "") + "\n")
                 self._file.flush()
+            else:
+                text = data.get("content", {}).get("text", "")
+                if text:
+                    self._file.write(text + "\n")
+                    self._file.flush()
+        elif event_type == "agent_thought_chunk":
+            if "text" in data and "type" in data:
+                self._file.write(f"💭 {data.get('text', '')}\n")
+                self._file.flush()
+            else:
+                text = data.get("content", {}).get("text", "")
+                if text:
+                    self._file.write(f"💭 {text}\n")
+                    self._file.flush()
         elif event_type == "tool_call":
             tid = data.get("toolCallId", "")
             name = data.get("toolName", "")

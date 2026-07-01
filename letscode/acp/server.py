@@ -961,21 +961,25 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
         return None
 
     if type_ == "agent_message_chunk":
-        # Support both flat (new) and nested (legacy) formats
+        # Support both flat (new) and nested (legacy) formats. Each chunk is
+        # one line of stream output with its "\n" stripped; a blank line is
+        # the empty string "". Append "\n" unconditionally and forward —
+        # dropping the empty string would lose markdown paragraph breaks.
         if "text" in data and "type" in data:
             text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
+            return h.update_agent_message_text(text + "\n")
+        text = data.get("content", {}).get("text", "")
         if text:
             return h.update_agent_message_text(text + "\n")
         return None
 
     if type_ == "agent_thought_chunk":
-        # Reasoning/thinking output (e.g. GLM reasoning_content)
+        # Reasoning/thinking output (e.g. GLM reasoning_content). Same
+        # blank-line handling as agent_message_chunk above.
         if "text" in data and "type" in data:
             text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
+            return h.update_agent_thought_text(text + "\n")
+        text = data.get("content", {}).get("text", "")
         if text:
             return h.update_agent_thought_text(text + "\n")
         return None

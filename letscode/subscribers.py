@@ -339,7 +339,12 @@ class MessageSubscriber:
         if not self._text_parts and not self._tool_order:
             return
 
-        full_text = "".join(self._text_parts)
+        # Each text part is one line of stream output with its trailing "\n"
+        # stripped (a blank line is the empty string ""). Join with "\n" to
+        # reconstruct the original text, including paragraph breaks. A single
+        # legacy part carrying a whole multi-line block is unaffected (joining
+        # a one-element list returns it verbatim).
+        full_text = "\n".join(self._text_parts)
         assistant_msg: dict[str, Any] = {
             "role": "assistant",
             "content": full_text or None,
@@ -417,24 +422,33 @@ class CliOutputSubscriber:
             self._on_result(data)
 
     def _on_agent_message_chunk(self, data: dict) -> None:
-        # Always write text to stdout — this is the main LLM output
+        # Always write text to stdout — this is the main LLM output. Each
+        # chunk is one line of stream output with "\n" stripped; a blank
+        # line is the empty string "" and must still be written (as "\n")
+        # so markdown paragraph breaks are preserved.
         if "text" in data and "type" in data:
             text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
+            sys.stdout.write(text + "\n")
+            sys.stdout.flush()
+            return
+        text = data.get("content", {}).get("text", "")
         if text:
             sys.stdout.write(text + "\n")
             sys.stdout.flush()
 
     def _on_agent_thought_chunk(self, data: dict) -> None:
         # Verbose-only: render reasoning/thinking to stderr (dim) so it
-        # stays out of stdout pipes. Non-verbose mode stays quiet.
+        # stays out of stdout pipes. Non-verbose mode stays quiet. Same
+        # blank-line handling as agent_message_chunk above.
         if not self._verbose:
             return
         if "text" in data and "type" in data:
             text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
+            from .tools._display import _dim
+            sys.stderr.write(_dim(f"💭 {text}") + "\n")
+            sys.stderr.flush()
+            return
+        text = data.get("content", {}).get("text", "")
         if text:
             from .tools._display import _dim
             sys.stderr.write(_dim(f"💭 {text}") + "\n")
