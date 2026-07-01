@@ -71,6 +71,24 @@ def _format_stat_quote(big_turn: int, tokens: int, elapsed: float) -> str:
     return f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens | {_human_duration(elapsed)}\n"
 
 
+def _make_replay_stat_quote(data: dict, prev_tokens: int, prev_turn: int) -> str | None:
+    """Build a stat footer from a replayed ``result`` event's data.
+
+    Mirrors :func:`_format_stat_quote` but takes the turn's usage + duration
+    from the logged event. ``tokens`` is the delta vs the previous turn's
+    cumulative ``prompt_tokens`` (matching the live path), floored at 0.
+    """
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    delta = max(prompt_tokens - prev_tokens, 0)
+    duration_ms = data.get("duration_ms") or 0
+    elapsed = duration_ms / 1000.0
+    # A result event may lack usage (e.g. error turns); skip those.
+    if not prompt_tokens and not duration_ms:
+        return None
+    return _format_stat_quote(prev_turn + 1, delta, elapsed)
+
+
 def _get_modes() -> list[dict]:
     from ..sandbox import list_presets
     return list_presets()
@@ -639,6 +657,34 @@ class LetscodeAgent:
             ui_events = events
 
         for event in ui_events:
+            # On a result event, emit the per-turn stat footer (same format as
+            # the live path) so resumed sessions show the same "> Turn N | …"
+            # quotes as a live session.
+            if self.show_stat and event.get("type") in ("result", "session/result"):
+                data = event.get("data", {})
+                quote = _make_replay_stat_quote(
+                    data,
+                    self._session_prompt_tokens.get(session_id, 0),
+                    self._session_big_turn.get(session_id, 0),
+                )
+                if quote is not None and self._conn is not None:
+                    try:
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=h.update_agent_message_text(quote),
+                        )
+                    except Exception:
+                        logger.debug("Failed to emit replay stat quote", exc_info=True)
+                    # Advance the running counters so subsequent turns' deltas
+                    # are correct.
+                    usage = data.get("usage", {})
+                    pt = usage.get("prompt_tokens", 0)
+                    if pt:
+                        self._session_prompt_tokens[session_id] = pt
+                    self._session_big_turn[session_id] = \
+                        self._session_big_turn.get(session_id, 0) + 1
+                continue  # result events are never translated to UI updates
+
             update = _translate_event(event, pending_tool_inputs)
             if update is not None and self._conn is not None:
                 if isinstance(update, list):

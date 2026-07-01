@@ -650,3 +650,33 @@ class TestLastPromptTokens:
             {"type": "session/result", "data": {"usage": {"prompt_tokens": 3000}}},
         ]
         assert _last_prompt_tokens(events) == 3000
+
+
+class TestReplayStatQuote:
+    """Session load replay emits the same per-turn stat footers as live."""
+
+    def test_builds_quote_from_result_event(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        data = {"usage": {"prompt_tokens": 5000}, "duration_ms": 3000}
+        q = _make_replay_stat_quote(data, prev_tokens=2000, prev_turn=1)
+        assert q is not None
+        assert "Turn 2" in q
+        assert "3.0k" in q     # delta = 5000 - 2000 = 3000 → "3.0k"
+        assert "3s" in q       # 3000ms = 3s
+
+    def test_delta_floored_at_zero(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        data = {"usage": {"prompt_tokens": 100}, "duration_ms": 1000}
+        q = _make_replay_stat_quote(data, prev_tokens=500, prev_turn=0)
+        assert q is not None
+        assert "0 tokens" in q   # max(100 - 500, 0) = 0
+
+    def test_returns_none_when_no_usage_or_duration(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        assert _make_replay_stat_quote({}, prev_tokens=0, prev_turn=0) is None
+
+    def test_turn_number_increments(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        data = {"usage": {"prompt_tokens": 1000}, "duration_ms": 500}
+        q = _make_replay_stat_quote(data, prev_tokens=0, prev_turn=4)
+        assert "Turn 5" in q
