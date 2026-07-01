@@ -38,6 +38,7 @@ from acp.schema import (
 )
 
 from .. import __version__
+from ..feed_util import split_turns, write_events
 from .commands import SlashCommandRegistry, create_builtin_registry, parse_slash_command, register_skills
 from .session import Session, create_session, list_sessions, load_session_meta, save_session
 
@@ -70,6 +71,24 @@ def _format_stat_quote(big_turn: int, tokens: int, elapsed: float) -> str:
     return f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens | {_human_duration(elapsed)}\n"
 
 
+def _make_replay_stat_quote(data: dict, prev_tokens: int, prev_turn: int) -> str | None:
+    """Build a stat footer from a replayed ``result`` event's data.
+
+    Mirrors :func:`_format_stat_quote` but takes the turn's usage + duration
+    from the logged event. ``tokens`` is the delta vs the previous turn's
+    cumulative ``prompt_tokens`` (matching the live path), floored at 0.
+    """
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    delta = max(prompt_tokens - prev_tokens, 0)
+    duration_ms = data.get("duration_ms") or 0
+    elapsed = duration_ms / 1000.0
+    # A result event may lack usage (e.g. error turns); skip those.
+    if not prompt_tokens and not duration_ms:
+        return None
+    return _format_stat_quote(prev_turn + 1, delta, elapsed)
+
+
 def _get_modes() -> list[dict]:
     from ..sandbox import list_presets
     return list_presets()
@@ -95,6 +114,8 @@ class LetscodeAgent:
         self._session_big_turn: dict[str, int] = {}
         # Per-session context window size (captured from the init event).
         self._session_context_window: dict[str, int] = {}
+        # Per-session in-flight title-generation tasks (so we don't double-fire).
+        self._session_title_task: dict[str, asyncio.Task] = {}
         self._load_models()
 
     def _load_models(self) -> None:
@@ -274,6 +295,22 @@ class LetscodeAgent:
         # ── Slash command handling ──
         registry = self._session_commands.get(session_id)
         cmd_name, cmd_args = parse_slash_command(serialized_blocks)
+        if cmd_name == "rename":
+            # Echo the command first so the UI shows it immediately, even while
+            # the no-arg form awaits the LLM for title generation.
+            if self._conn is not None:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=h.update_user_message(
+                        h.text_block(f"/rename{(' ' + cmd_args) if cmd_args else ''}")
+                    ),
+                )
+            # /rename is dispatched here (not via the registry): it needs the
+            # connection to push a session_info_update, and the no-arg form runs
+            # async gen-title. Returns immediately like other slash commands.
+            await self._handle_rename(session_id, cmd_args)
+            return PromptResponse(stop_reason="end_turn")
+
         if cmd_name is not None and registry is not None:
             cmd = registry.get(cmd_name)
             if cmd is not None and cmd.handler is not None:
@@ -303,9 +340,21 @@ class LetscodeAgent:
                     )
                 serialized_blocks = [{"type": "text", "text": expanded}]
 
+        was_first_prompt = session.title is None
         if session.title is None:
             title = next((b.get("text", "") for b in serialized_blocks if b.get("type") == "text"), "")
             session.title = title[:120] if title else None
+
+        # Kick off title generation early (before the agent subprocess starts),
+        # in parallel with the agent run. Title uses only user prompts — no need
+        # to wait for the agent's reply.
+        if was_first_prompt and not self._session_title_task.get(session_id):
+            current_text = next(
+                (b.get("text", "") for b in serialized_blocks if b.get("type") == "text"), ""
+            )
+            self._session_title_task[session_id] = asyncio.create_task(
+                self._generate_and_set_title(session_id, current_text)
+            )
 
         # Spill inline image blocks to local files so they travel to the
         # subprocess as short path refs (image_ref) instead of huge base64
@@ -476,6 +525,80 @@ class LetscodeAgent:
 
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
+    async def _handle_rename(self, session_id: str, args: str | None) -> None:
+        """Handle /rename: set the title directly, or generate it when no arg.
+
+        Pushes a session_info_update so the client's UI updates immediately.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        title = (args or "").strip()
+        if title:
+            # Direct rename: use the given title.
+            self._apply_title(session_id, title)
+        else:
+            # No arg: generate a title from the user prompts in the session.
+            from ..feed_util import extract_user_prompts, read_events
+            prompts: list[str] = []
+            if session.log_path and Path(session.log_path).exists():
+                prompts = extract_user_prompts(read_events(session.log_path))
+            from .titles import generate_title
+            gen = await generate_title(
+                prompts,
+                model_id=session.model, config_path=self.config_path,
+            )
+            if gen:
+                self._apply_title(session_id, gen)
+
+    def _apply_title(self, session_id: str, title: str) -> None:
+        """Set + persist the title, and push a session_info_update to the client."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        session.title = title
+        save_session(session)
+        logger.info("Renamed session %s: %s", session_id[:12], title)
+        if self._conn is not None:
+            try:
+                from acp.schema import SessionInfoUpdate
+                asyncio.create_task(self._conn.session_update(
+                    session_id=session_id,
+                    update=SessionInfoUpdate(
+                        session_update="session_info_update", title=title,
+                    ),
+                ))
+            except Exception:
+                logger.debug("Failed to push title update to client", exc_info=True)
+
+    async def _generate_and_set_title(
+        self, session_id: str, current_prompt: str,
+    ) -> None:
+        """Async title generation from user prompts. Fire-and-forget.
+
+        Uses the current prompt plus any prior user prompts from the session
+        log. No agent replies — the questions a user asks are the best signal
+        for what the session is about.
+        """
+        from .titles import generate_title
+        from ..feed_util import extract_user_prompts, read_events
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        # Gather prior user prompts from the log (the current prompt hasn't
+        # been written yet at auto-trigger time).
+        prior_prompts: list[str] = []
+        if session.log_path and Path(session.log_path).exists():
+            prior_prompts = extract_user_prompts(read_events(session.log_path))
+        all_prompts = prior_prompts + ([current_prompt] if current_prompt.strip() else [])
+        title = await generate_title(
+            all_prompts,
+            model_id=session.model, config_path=self.config_path,
+        )
+        self._session_title_task.pop(session_id, None)
+        if title:
+            self._apply_title(session_id, title)
+
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
         if self._agent_proc is not None and session_id == self._current_session_id:
             self._cancelled = True
@@ -498,7 +621,70 @@ class LetscodeAgent:
 
         pending_tool_inputs: dict[str, dict] = {}
         events = await asyncio.to_thread(_read_log_events, session.log_path)
-        for event in events:
+
+        # Summarize old turns for the UI if the session is long. The summary is
+        # written to the log as a session/summary event (UI-only; the agent's
+        # --feed replay skips it, so the agent still sees full history).
+        from .summaries import (
+            SUMMARY_TURN_THRESHOLD, SUMMARY_EVENT_TYPE,
+            find_summary_event, summarize_old_turns,
+        )
+        summary_event = find_summary_event(events)
+        if summary_event is None:
+            turns = split_turns(events)
+            if len(turns) > SUMMARY_TURN_THRESHOLD:
+                summary_event = await summarize_old_turns(
+                    events, SUMMARY_TURN_THRESHOLD,
+                    model_id=session.model, config_path=self.config_path,
+                )
+                if summary_event is not None:
+                    # Persist: insert the summary event before the last
+                    # THRESHOLD turns so future loads reuse it.
+                    keep_events = [ev for t in turns[-SUMMARY_TURN_THRESHOLD:] for ev in t]
+                    early_events = [ev for t in turns[:-SUMMARY_TURN_THRESHOLD] for ev in t]
+                    new_events = early_events + [summary_event] + keep_events
+                    await asyncio.to_thread(
+                        lambda: write_events(session.log_path, new_events),  # type: ignore[arg-type]
+                    )
+                    events = new_events
+
+        # Decide which events to send to the UI. If a summary exists, emit it
+        # as a thought block and only stream the events after it (the kept
+        # recent turns). Otherwise send everything.
+        if summary_event is not None:
+            ui_events = [summary_event] + _events_after_summary(events, summary_event)
+        else:
+            ui_events = events
+
+        for event in ui_events:
+            # On a result event, emit the per-turn stat footer (same format as
+            # the live path) so resumed sessions show the same "> Turn N | …"
+            # quotes as a live session.
+            if self.show_stat and event.get("type") in ("result", "session/result"):
+                data = event.get("data", {})
+                quote = _make_replay_stat_quote(
+                    data,
+                    self._session_prompt_tokens.get(session_id, 0),
+                    self._session_big_turn.get(session_id, 0),
+                )
+                if quote is not None and self._conn is not None:
+                    try:
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=h.update_agent_message_text(quote),
+                        )
+                    except Exception:
+                        logger.debug("Failed to emit replay stat quote", exc_info=True)
+                    # Advance the running counters so subsequent turns' deltas
+                    # are correct.
+                    usage = data.get("usage", {})
+                    pt = usage.get("prompt_tokens", 0)
+                    if pt:
+                        self._session_prompt_tokens[session_id] = pt
+                    self._session_big_turn[session_id] = \
+                        self._session_big_turn.get(session_id, 0) + 1
+                continue  # result events are never translated to UI updates
+
             update = _translate_event(event, pending_tool_inputs)
             if update is not None and self._conn is not None:
                 if isinstance(update, list):
@@ -631,6 +817,19 @@ def _spill_image_blocks(blocks: list[dict], cwd: str) -> list[dict]:
         else:
             out.append(b)
     return out
+
+
+def _events_after_summary(events: list[dict], summary_event: dict) -> list[dict]:
+    """Return the events following ``summary_event`` in the log.
+
+    On load with a summary, only those (the kept recent turns) are streamed to
+    the UI — the early turns stay on disk for the agent's full replay.
+    """
+    try:
+        idx = events.index(summary_event)
+    except ValueError:
+        return events
+    return events[idx + 1:]
 
 
 def _resolve_image_for_ui(block: dict):
@@ -887,6 +1086,14 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
     if type_ == "session/result":
         # Legacy format
         return None
+
+    if type_ == "session/summary":
+        # A collapsed summary of early turns, shown as a thought block in the UI.
+        text = data.get("text", "")
+        n = data.get("summarized_turns", 0)
+        header = f"[已折叠 {n} 轮早期对话]" if n else "[历史摘要]"
+        body = f"{header}\n{text}" if text else header
+        return h.update_agent_thought(h.text_block(body))
 
     return None
 

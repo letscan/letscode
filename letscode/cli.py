@@ -136,6 +136,19 @@ async def _async_main(args):
                 model = feed_model or model
             system_prompt = build_system_prompt(model)
 
+            # Vision proxy: if the active model can't see images but a
+            # vision_model is configured, route each image through it and splice
+            # the text descriptions back into the prompt. No-op for vision
+            # models or text-only prompts.
+            if not config.vision:
+                from .config import load_vision_model_id
+                vision_model_id = load_vision_model_id(args.config)
+                if vision_model_id:
+                    from .vision_proxy import rewrite_prompt_for_text_model
+                    prompt_blocks = await rewrite_prompt_for_text_model(
+                        prompt_blocks, vision_model_id, args.config,
+                    )
+
             try:
                 rc = await run_agent(
                     prompt_blocks=prompt_blocks,
@@ -313,7 +326,18 @@ def main():
         action="append",
         default=[],
     )
+    parser.add_argument(
+        "--version", "-V",
+        help="Show version and exit",
+        action="store_true",
+        default=False,
+    )
     args = parser.parse_args()
+
+    if args.version:
+        from . import __version__
+        print(f"letscode {__version__}")
+        return
 
     if args.models:
         models, default_model = list_models(args.config)

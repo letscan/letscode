@@ -4,12 +4,12 @@ import json
 import os
 import sys
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .config import ModelConfig
 from .events import get_hub
 from .mcp import get_manager
-from .stream import consume_stream
+from .stream import consume_stream_async
 from .subscribers import MessageSubscriber
 from .tools.runner import ToolRunner, ToolOutput, ToolResult
 
@@ -31,7 +31,7 @@ async def run_agent(
     tools = tool_runner or ToolRunner([], {})
 
     # --- Setup ---
-    client = OpenAI(
+    client = AsyncOpenAI(
         api_key=config.api_key or "dummy",
         base_url=config.base_url,
     )
@@ -86,7 +86,7 @@ async def run_agent(
         try:
             on_line = hub.on_text_line if hub else None
             on_thought_line = hub.on_thought_line if hub else None
-            stream_result = consume_stream(
+            stream_result = await consume_stream_async(
                 client, config.model, messages, config.max_tokens,
                 tools=all_tools, on_line=on_line, on_thought_line=on_thought_line,
                 max_retries=config.max_retries,
