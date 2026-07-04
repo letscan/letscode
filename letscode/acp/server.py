@@ -961,28 +961,18 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
         return None
 
     if type_ == "agent_message_chunk":
-        # Support both flat (new) and nested (legacy) formats. Each chunk is
-        # one line of stream output with its "\n" stripped; a blank line is
-        # the empty string "". Append "\n" unconditionally and forward —
-        # dropping the empty string would lose markdown paragraph breaks.
-        if "text" in data and "type" in data:
-            text = data.get("text", "")
-            return h.update_agent_message_text(text + "\n")
-        text = data.get("content", {}).get("text", "")
-        if text:
-            return h.update_agent_message_text(text + "\n")
-        return None
+        # Each chunk is one line of stream output with its "\n" stripped; a
+        # blank line is the empty string "". Append "\n" unconditionally and
+        # forward — dropping the empty string would lose markdown paragraph
+        # breaks.
+        text = data.get("text", "")
+        return h.update_agent_message_text(text + "\n")
 
     if type_ == "agent_thought_chunk":
         # Reasoning/thinking output (e.g. GLM reasoning_content). Same
         # blank-line handling as agent_message_chunk above.
-        if "text" in data and "type" in data:
-            text = data.get("text", "")
-            return h.update_agent_thought_text(text + "\n")
-        text = data.get("content", {}).get("text", "")
-        if text:
-            return h.update_agent_thought_text(text + "\n")
-        return None
+        text = data.get("text", "")
+        return h.update_agent_thought_text(text + "\n")
 
     if type_ in ("session/prompt", "prompt"):
         # User input event. Current "prompt" events carry the block list
@@ -1074,14 +1064,13 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             content=content,
         )
 
-    if type_ == "user_message":
-        # Legacy format: translate to ACP user message
-        text = data.get("content", {}).get("text", "")
+    if type_ in ("user_message", "user_message_chunk"):
+        # Injected user content: skill expansion prompts, compact summaries.
+        # Translate so they render as a user turn in the ACP client.
+        text = data.get("text", "")
         if text:
             return h.update_user_message(h.text_block(text))
         return None
-
-    # user_message_chunk: skill expansion — not translated to ACP
 
     if type_ == "result":
         # Not translated to session update; handled by prompt() method

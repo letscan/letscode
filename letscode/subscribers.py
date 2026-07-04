@@ -271,12 +271,7 @@ class MessageSubscriber:
     def _on_agent_message_chunk(self, data: dict) -> None:
         if self._tool_order:
             self._flush_turn()
-        # Flat format: {"type": "text", "text": "..."}
-        if "text" in data and "type" in data:
-            self._text_parts.append(data.get("text", ""))
-        else:
-            # Nested legacy format
-            self._text_parts.append(data.get("content", {}).get("text", ""))
+        self._text_parts.append(data.get("text", ""))
 
     def _on_tool_call(self, data: dict) -> None:
         tid = data.get("toolCallId", "")
@@ -323,15 +318,20 @@ class MessageSubscriber:
         self._add_extra_user_message(data)
 
     def _add_extra_user_message(self, data: dict) -> None:
-        if isinstance(data, dict) and "text" in data and "type" in data:
-            text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
-        if text and self._tool_order:
+        text = data.get("text", "")
+        if not text:
+            return
+        if self._tool_order:
+            # Attach after the most recent pending tool result (skill expansion)
             last_tid = self._tool_order[-1]
             self._extra_after_tool.setdefault(last_tid, []).append(
                 {"role": "user", "content": text}
             )
+        else:
+            # No pending tool: a standalone user message (e.g. compact summary).
+            # Flush the current turn, then append as a top-level user message.
+            self._flush_turn()
+            self.messages.append({"role": "user", "content": text})
 
     # -- turn management --
 
@@ -426,15 +426,9 @@ class CliOutputSubscriber:
         # chunk is one line of stream output with "\n" stripped; a blank
         # line is the empty string "" and must still be written (as "\n")
         # so markdown paragraph breaks are preserved.
-        if "text" in data and "type" in data:
-            text = data.get("text", "")
-            sys.stdout.write(text + "\n")
-            sys.stdout.flush()
-            return
-        text = data.get("content", {}).get("text", "")
-        if text:
-            sys.stdout.write(text + "\n")
-            sys.stdout.flush()
+        text = data.get("text", "")
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
 
     def _on_agent_thought_chunk(self, data: dict) -> None:
         # Verbose-only: render reasoning/thinking to stderr (dim) so it
@@ -442,17 +436,10 @@ class CliOutputSubscriber:
         # blank-line handling as agent_message_chunk above.
         if not self._verbose:
             return
-        if "text" in data and "type" in data:
-            text = data.get("text", "")
-            from .tools._display import _dim
-            sys.stderr.write(_dim(f"💭 {text}") + "\n")
-            sys.stderr.flush()
-            return
-        text = data.get("content", {}).get("text", "")
-        if text:
-            from .tools._display import _dim
-            sys.stderr.write(_dim(f"💭 {text}") + "\n")
-            sys.stderr.flush()
+        text = data.get("text", "")
+        from .tools._display import _dim
+        sys.stderr.write(_dim(f"💭 {text}") + "\n")
+        sys.stderr.flush()
 
     def _on_result(self, data: dict) -> None:
         # Print a token-usage summary to stderr (stays out of stdout pipes).

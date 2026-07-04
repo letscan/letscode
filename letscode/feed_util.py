@@ -70,12 +70,7 @@ def last_agent_text(turn_events: list[dict]) -> str | None:
     chunks: list[str] = []
     for ev in reversed(turn_events):
         if ev.get("type") == "agent_message_chunk":
-            data = ev.get("data", {})
-            # Support both flat (new) and nested (legacy) formats
-            if "text" in data and "type" in data:
-                text = data.get("text", "")
-            else:
-                text = data.get("content", {}).get("text", "")
+            text = ev.get("data", {}).get("text", "")
             if text:
                 chunks.append(text)
 
@@ -144,11 +139,7 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
                 parts.append(f"User: {text}\n")
 
         elif type_ == "agent_message_chunk":
-            # Support both flat (new) and nested (legacy) formats
-            if "text" in data and "type" in data:
-                text = data.get("text", "")
-            else:
-                text = data.get("content", {}).get("text", "")
+            text = data.get("text", "")
             if text:
                 parts.append(f"Assistant: {text}\n")
 
@@ -173,10 +164,7 @@ def extract_conversation_text(events: list[dict], max_chars: int = 80000) -> str
                     parts.append(f"[Tool Result] {summary[:200]}\n")
 
         elif type_ in ("user_message", "user_message_chunk"):
-            if isinstance(data, dict) and "text" in data and "type" in data:
-                text = data.get("text", "")
-            else:
-                text = data.get("content", {}).get("text", "")
+            text = data.get("text", "")
             if text:
                 parts.append(f"User: {text[:200]}\n")
 
@@ -196,12 +184,7 @@ def extract_skill_activations(events: list[dict]) -> list[dict]:
     for ev in events:
         if ev.get("type") != "agent_message_chunk":
             continue
-        data = ev.get("data", {})
-        # Support both flat (new) and nested (legacy) formats
-        if "text" in data and "type" in data:
-            text = data.get("text", "")
-        else:
-            text = data.get("content", {}).get("text", "")
+        text = ev.get("data", {}).get("text", "")
         if text.lstrip().startswith(_SKILL_HEADER_PREFIX):
             activations.append(ev)
     return activations

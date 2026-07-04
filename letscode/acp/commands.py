@@ -2,7 +2,9 @@
 
 import logging
 import re
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import acp.helpers as h
 from acp.schema import AvailableCommand, AvailableCommandsUpdate
@@ -91,7 +93,15 @@ def _handle_new(session, args: str | None = None, **kwargs) -> CommandResult:
 
 
 def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult:
-    """Compress context with an LLM-generated structured summary."""
+    """Compress context with an LLM-generated structured summary.
+
+    The summary is written as a ``user_message_chunk`` so that on replay it
+    becomes a ``role: user`` message — context injected for the model, not an
+    assistant claim. The original log is renamed to a ``.compactN.bak`` sibling
+    (auto-incremented so repeated compactions don't clobber earlier backups),
+    and a fresh log is written in its place. OpenAI-compatible APIs accept the
+    resulting consecutive ``user`` sequence (summary + real prompt) natively.
+    """
     log_path = getattr(session, "log_path", None)
     if not log_path:
         return CommandResult(message="没有可压缩的上下文。")
@@ -118,29 +128,56 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     if not conversation_text.strip():
         return CommandResult(message="上下文过短，无需压缩。")
 
+    # The init event carries model/config metadata needed for replay; keep it.
+    init_event = next((ev for ev in events if ev.get("type") == "init"), None)
+
+    # Build the kept-turn events, excluding any init (kept once, up front) so
+    # the new log has exactly one init at the head.
+    kept_turn_events = [ev for turn in turns_to_keep for ev in turn
+                        if ev.get("type") != "init"]
+
     # Try LLM summarization
     config = kwargs.get("config")
     summary = _try_llm_summarize(config, conversation_text)
 
-    # Build preserved events: skill activations (kept intact) + summary + recent turns
-    if summary is None:
-        # Fallback: just keep the last turn + skill activations
-        kept_events = skill_events + [ev for turn in turns_to_keep for ev in turn]
-        write_events(log_path, kept_events)
-        removed_chars = len(conversation_text)
-        return CommandResult(message=f"已压缩上下文（移除约 {removed_chars} 字符）。")
+    new_events: list[dict] = []
+    if init_event:
+        new_events.append(init_event)
+    new_events.extend(skill_events)
 
-    # Build compacted log: skill activations + summary + kept turns
-    summary_event = {
-        "type": "agent_message_chunk",
-        "data": {
-            "content": {"type": "text", "text": f"[上下文摘要]\n{summary}"},
-        },
-    }
-    kept_events = skill_events + [summary_event] + [ev for turn in turns_to_keep for ev in turn]
-    write_events(log_path, kept_events)
+    if summary is not None:
+        summary_event = {
+            "type": "user_message_chunk",
+            "data": {"type": "text", "text": f"[来自 compact 的上下文摘要]\n{summary}"},
+        }
+        new_events.append(summary_event)
 
-    return CommandResult(message=f"已压缩上下文。摘要:\n{summary[:200]}")
+    new_events.extend(kept_turn_events)
+
+    # Back up the original log (auto-incremented suffix), then write the
+    # compacted content back to the same path so the session id → path
+    # mapping in server.py keeps resolving correctly.
+    _backup_log(log_path)
+    write_events(log_path, new_events)
+
+    if summary is not None:
+        return CommandResult(message=f"已压缩上下文。摘要:\n{summary[:200]}")
+    removed_chars = len(conversation_text)
+    return CommandResult(message=f"已压缩上下文（移除约 {removed_chars} 字符）。")
+
+
+def _backup_log(log_path: str) -> None:
+    """Rename log_path to a .compactN.bak sibling, auto-incrementing N.
+
+    If the original file doesn't exist (defensive), this is a no-op.
+    """
+    p = Path(log_path)
+    if not p.exists():
+        return
+    n = 1
+    while p.with_name(f"{p.name}.compact{n}.bak").exists():
+        n += 1
+    shutil.move(str(p), str(p.with_name(f"{p.name}.compact{n}.bak")))
 
 
 def _handle_undo(session, args: str | None = None, **kwargs) -> CommandResult:
