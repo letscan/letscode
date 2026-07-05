@@ -180,6 +180,62 @@ async def consume_stream_async(
     raise last_err  # type: ignore[misc]
 
 
+def _normalize_usage(usage) -> dict:
+    """Extract a stable usage dict from one provider's ``CompletionUsage``.
+
+    Normalizes the prompt-cache fields across providers into a single pair:
+    ``cache_read_tokens`` (cache HIT — tokens served from cache) and
+    ``cache_write_tokens`` (cache CREATION — tokens written to the cache,
+    often billed at a premium). Both default to 0 when the provider doesn't
+    report cache stats.
+
+    Provider field-name variants handled here:
+      - OpenAI / Qwen / GLM: ``prompt_tokens_details.cached_tokens`` (read)
+      - DeepSeek-native: ``prompt_cache_hit_tokens`` (read) /
+        ``prompt_cache_miss_tokens`` (≈ write, the non-cached prefix)
+      - Anthropic: ``cache_read_input_tokens`` (read) /
+        ``cache_creation_input_tokens`` (write)
+
+    The SDK preserves extra provider fields at runtime via ``extra="allow"``,
+    so the non-OpenAI fields are reachable through ``model_dump()``.
+    """
+    raw = usage.model_dump() if hasattr(usage, "model_dump") else dict(usage or {})
+
+    prompt = raw.get("prompt_tokens", 0) or 0
+    completion = raw.get("completion_tokens", 0) or 0
+    total = raw.get("total_tokens", 0) or (prompt + completion)
+
+    ptd = raw.get("prompt_tokens_details") or {}
+    ctd = raw.get("completion_tokens_details") or {}
+
+    # Cache reads (hits). Try every known field name; first non-zero wins.
+    cache_read = (
+        ptd.get("cached_tokens")
+        or raw.get("prompt_cache_hit_tokens")
+        or raw.get("cache_read_input_tokens")
+        or 0
+    ) or 0
+
+    # Cache writes (creation). DeepSeek has no explicit write field, so we use
+    # prompt_cache_miss_tokens (the prefix that wasn't cached this turn) as an
+    # upper-bound proxy only when there was no hit — this avoids double-counting
+    # on the common steady-state path where most of the prefix is cached.
+    cache_write = (
+        ptd.get("cache_creation_input_tokens")
+        or raw.get("cache_creation_input_tokens")
+        or 0
+    ) or 0
+
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "reasoning_tokens": getattr(ctd, "reasoning_tokens", None) or ctd.get("reasoning_tokens") or 0,
+    }
+
+
 def _process_chunk(chunk, state: dict,
                    on_line: Callable[[str], None] | None,
                    on_thought_line: Callable[[str], None] | None) -> None:
@@ -189,11 +245,7 @@ def _process_chunk(chunk, state: dict,
     thought_buf, tc_accum. Side effects: calls on_line / on_thought_line.
     """
     if chunk.usage is not None:
-        state["usage"] = {
-            "prompt_tokens": getattr(chunk.usage, "prompt_tokens", 0) or 0,
-            "completion_tokens": getattr(chunk.usage, "completion_tokens", 0) or 0,
-            "total_tokens": getattr(chunk.usage, "total_tokens", 0) or 0,
-        }
+        state["usage"] = _normalize_usage(chunk.usage)
 
     if not chunk.choices:
         return

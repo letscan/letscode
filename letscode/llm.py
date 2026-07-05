@@ -81,14 +81,20 @@ async def call_llm(
 
     # Diagnose "thinking too much": compare reasoning vs actual output.
     usage = result.usage or {}
+    cr = usage.get("cache_read_tokens", 0)
+    cw = usage.get("cache_write_tokens", 0)
+    cache_note = ""
+    if cr or cw:
+        cache_note = (f", cache(read={cr}/write={cw})")
     logger.info(
         "%s done in %.1fs — text=%d chars, reasoning=%d chars, "
-        "tokens(in=%d/out=%d/total=%d)",
+        "tokens(in=%d/out=%d/total=%d%s)",
         tag, elapsed,
         len(result.text_content), len(result.thought_content),
         usage.get("prompt_tokens", 0),
         usage.get("completion_tokens", 0),
         usage.get("total_tokens", 0),
+        cache_note,
     )
     if result.thought_content and not result.text_content:
         logger.warning(

@@ -82,7 +82,13 @@ class EventHub:
         self._start_time: float | None = None
         self._turns = 0
         self._tool_calls = 0
-        self._usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self._usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+        }
 
     def subscribe(self, handler: Callable[[str, dict], None]) -> None:
         self._subscribers.append(handler)
@@ -101,10 +107,18 @@ class EventHub:
         self._turns = turns
 
     def record_usage(self, usage: dict) -> None:
-        """Accumulate per-turn token usage across the session."""
+        """Accumulate per-turn token usage across the session.
+
+        Cache tokens are accumulated alongside prompt/completion/total so the
+        session result reflects total cache savings across all turns. This is
+        the key observability seam: callers (event stream, ACP, stdout summary)
+        read these fields without needing to know the provider's field names.
+        """
         self._usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
         self._usage["completion_tokens"] += usage.get("completion_tokens", 0)
         self._usage["total_tokens"] += usage.get("total_tokens", 0)
+        self._usage["cache_read_tokens"] += usage.get("cache_read_tokens", 0)
+        self._usage["cache_write_tokens"] += usage.get("cache_write_tokens", 0)
 
     # ------------------------------------------------------------------
     # Convenience methods (high-level API used by agent.py)

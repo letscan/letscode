@@ -439,6 +439,9 @@ class LetscodeAgent:
                             input_tokens=usage_data.get("prompt_tokens", 0),
                             output_tokens=usage_data.get("completion_tokens", 0),
                             total_tokens=usage_data.get("total_tokens", 0),
+                            cached_read_tokens=usage_data.get("cache_read_tokens") or None,
+                            cached_write_tokens=usage_data.get("cache_write_tokens") or None,
+                            thought_tokens=usage_data.get("reasoning_tokens") or None,
                         )
                     continue
                 if event.get("type") == "error":

@@ -243,12 +243,18 @@ def _fake_chunk(*, content=None, reasoning=None):
 
 
 def _fake_usage_chunk(usage):
-    """Build a final chunk carrying usage with empty choices list."""
+    """Build a final chunk carrying usage with empty choices list.
+
+    The mock ``_Usage`` exposes ``model_dump()`` so it flows through
+    ``_normalize_usage`` the same way the real openai ``CompletionUsage``
+    object does.
+    """
     class _Usage:
         def __init__(self, d):
-            self.prompt_tokens = d.get("prompt_tokens", 0)
-            self.completion_tokens = d.get("completion_tokens", 0)
-            self.total_tokens = d.get("total_tokens", 0)
+            self._d = d
+
+        def model_dump(self):
+            return dict(self._d)
 
     class _Chunk:
         pass
@@ -311,8 +317,14 @@ class TestEventHubUsageAccumulation:
         hub = EventHub()
         set_hub(hub)
         hub.record_usage({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
-        hub.record_usage({"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28})
-        assert hub._usage == {"prompt_tokens": 30, "completion_tokens": 13, "total_tokens": 43}
+        hub.record_usage({"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28,
+                          "cache_read_tokens": 100, "cache_write_tokens": 50})
+        # Base counters accumulate across both calls; cache counters accumulate
+        # only from the call that reported them.
+        assert hub._usage == {
+            "prompt_tokens": 30, "completion_tokens": 13, "total_tokens": 43,
+            "cache_read_tokens": 100, "cache_write_tokens": 50,
+        }
 
     def test_emit_result_includes_usage_when_nonzero(self, tmp_path):
         from letscode.events import EventHub, set_hub
@@ -325,7 +337,10 @@ class TestEventHubUsageAccumulation:
         hub.emit_result("end_turn")
 
         result_event = next((t, d) for t, d in captured if t == "result")
-        assert result_event[1]["usage"] == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        assert result_event[1]["usage"] == {
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+        }
 
     def test_emit_result_omits_usage_when_zero(self, tmp_path):
         from letscode.events import EventHub, set_hub
