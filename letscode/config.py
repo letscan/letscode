@@ -18,6 +18,7 @@ class ModelConfig:
     verbose: bool = False
     rules: dict | None = None
     vision: bool = False
+    cache: str = "auto"
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -85,6 +86,11 @@ def _flatten_providers(providers: dict) -> list[dict]:
             entry = dict(m)  # model-level fields first
             entry.setdefault("api_key", api_key)
             entry.setdefault("base_url", base_url)
+            # Provider-level cache cascades only when actually set, so an unset
+            # provider value doesn't shadow the model-level default ("auto").
+            p_cache = provider.get("cache")
+            if p_cache is not None:
+                entry.setdefault("cache", p_cache)
             flat.append(entry)
     return flat
 
@@ -160,6 +166,7 @@ def load_config(
             sandbox=sandbox,
             rules=rules,
             vision=bool(entry.get("vision", False)),
+            cache=entry.get("cache", "auto"),
         )
     elif target:
         cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)

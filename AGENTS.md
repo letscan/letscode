@@ -63,7 +63,7 @@ The agent loop (`run_agent`) streams LLM responses, extracts tool calls, execute
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
 
-`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key` belong to the provider, `max_tokens`/`context_window`/`vision` to the model):
+`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key`/`cache` belong to the provider, `max_tokens`/`context_window`/`vision` to the model):
 ```json
 {
   "default_model": "model-id",
@@ -72,6 +72,7 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
     "<provider>": {
       "base_url": "...",
       "api_key": "...",
+      "cache": "auto|explicit|none",
       "models": [{"model": "...", "max_tokens": 200000, "context_window": 200000, "vision": false}]
     }
   },
@@ -81,6 +82,7 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
   "rules": {"allowRead": [...], "denyRead": [...], "allowWrite": [...], "denyWrite": [...], "allowCmd": [...], "denyCmd": [...]}
 }
 ```
+**Prompt cache mode** (`cache` field, provider- or model-level): `auto` (default) relies on server-side prefix caching — correct for DeepSeek and GLM ≥4.6. `explicit` opts a model into Anthropic-style `cache_control: {type: ephemeral}` markers on content blocks — required for Qwen/DashScope, which returns `cached_tokens=None` without them. `none` disables cache handling. Markers are injected at the single message-assembly site in `agent.py` via `cache_markers.apply_cache_markers()` using the `system_plus_rolling` strategy (3 breakpoints: system + 2nd-to-last + last non-system message) — the only placement achieving zero `cache_creation` across turns in A/B testing (see `docs/cache-multiturn-probe-2026-07-06.md`). The `cache` field cascades provider→model (model overrides provider), matching `base_url`/`api_key`.
 **Vision proxy**: `vision: false` on a model + a top-level `vision_model` set → image prompts are first routed through the vision model for text descriptions, spliced back into the prompt (`[Image-N]` markers + appended descriptions), so text-only models can reason about image content. `vision: true` models receive images inline. `call_llm()` (`llm.py`) is the shared single-shot LLM call used here and by future one-off uses (title/summary generation, compaction).
 Internally `config.py` flattens `providers` into per-model dicts (merging each provider's `base_url`/`api_key` into its models), so `list_models()`/`load_config()` and their callers see the same flat per-model shape. Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
 
@@ -122,6 +124,9 @@ JSONL event emitter for structured output. Always writes to `.letscode/logs/{tim
 ### Multi-Turn (`feed.py`, `feed_util.py`)
 - **`feed.py`**: Loads JSONL event logs and reconstructs the full conversation history (messages list). Used with `--feed <path>` to continue a previous session, optionally with `--append` to write new events into the same log file. Handles `user_message` events for skill content. Legacy logs (with `result_file` externalization and full skill content in `tool_call_update.result`) are backward-compatible.
 - **`feed_util.py`**: Shared event log manipulation utilities — `read_events`, `write_events`, `split_turns` (splits at `session/prompt` boundaries), `extract_conversation_text` (generates readable transcript for LLM summarization), `extract_skill_activations` (finds skill prompt events that must survive compaction), `last_agent_text`.
+
+### Prompt Cache Markers (`cache_markers.py`)
+Injects `cache_control: {type: ephemeral}` markers into the messages list for providers that need them explicitly (Qwen/DashScope, Anthropic). Called once per turn from `agent.py` after message assembly. Uses the `system_plus_rolling` strategy (3 breakpoints: system + 2nd-to-last + last non-system message), the only placement that achieves zero `cache_creation` across turns in A/B testing. No-op for `cache: auto|none` (DeepSeek, GLM — server-side caching). All helpers are idempotent so feed-replay (which rebuilds messages) never double-marks. See `docs/cache-probe-2026-07-05.md` (per-provider activation) and `docs/cache-multiturn-probe-2026-07-06.md` (strategy A/B test).
 
 ### System Prompt (`prompt.py`)
 8-section prompt. The `_env_section` dynamically injects CWD, git status, platform, shell, and OS version at runtime.

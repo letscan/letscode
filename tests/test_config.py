@@ -157,6 +157,54 @@ class TestVisionFields:
         assert load_vision_model_id(path) is None
 
 
+class TestCacheFields:
+    """cache flag on models — controls cache_control marker injection.
+
+    Default "auto" (DeepSeek/GLM cache server-side, no markers needed);
+    "explicit" opts a model into per-block markers (Qwen/DashScope, Anthropic).
+    """
+
+    def test_cache_defaults_auto(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a"}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.cache == "auto"
+
+    def test_cache_explicit_loaded(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a", "cache": "explicit"}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.cache == "explicit"
+
+    def test_cache_none_loaded(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a", "cache": "none"}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.cache == "none"
+
+    def test_cache_provider_level_cascades(self, tmp_path):
+        # Provider-level cache applies to models that don't override it.
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k", "cache": "explicit",
+                  "models": [{"model": "a"}, {"model": "b", "cache": "auto"}]},
+        })
+        cfg_a, _ = load_config(path, "a")
+        cfg_b, _ = load_config(path, "b")
+        assert cfg_a.cache == "explicit"  # inherited from provider
+        assert cfg_b.cache == "auto"      # model-level overrides provider
+
+    def test_cache_model_overrides_provider(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k", "cache": "auto",
+                  "models": [{"model": "a", "cache": "explicit"}]},
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.cache == "explicit"
+
+
 class TestListModels:
     def test_returns_models_and_default(self, tmp_path):
         path = _write_config(tmp_path, {

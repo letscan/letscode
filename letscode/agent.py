@@ -6,6 +6,7 @@ import sys
 
 from openai import AsyncOpenAI
 
+from .cache_markers import apply_cache_markers
 from .config import ModelConfig
 from .events import get_hub
 from .mcp import get_manager
@@ -81,6 +82,10 @@ async def run_agent(
 
         # Build messages: system prompt + msg_sub's reconstructed history
         messages = [{"role": "system", "content": system_prompt}] + msg_sub.messages
+        # Inject cache_control markers for providers that need them explicitly
+        # (Qwen/DashScope, Anthropic). No-op for auto-caching providers
+        # (DeepSeek, GLM). See letscode/cache_markers.py + docs/cache-*-probe.
+        messages = apply_cache_markers(messages, config.cache)
 
         # LLM call
         try:

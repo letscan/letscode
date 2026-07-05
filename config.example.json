@@ -19,6 +19,19 @@
           "vision": true
         }
       ]
+    },
+    "dashscope": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
+      "cache": "explicit",
+      "models": [
+        {
+          "model": "qwen3.5-plus-2026-04-20",
+          "max_tokens": 65536,
+          "context_window": 1000000,
+          "vision": true
+        }
+      ]
     }
   },
   "mcp_servers": {
