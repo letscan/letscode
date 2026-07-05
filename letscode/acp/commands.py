@@ -101,6 +101,12 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     (auto-incremented so repeated compactions don't clobber earlier backups),
     and a fresh log is written in its place. OpenAI-compatible APIs accept the
     resulting consecutive ``user`` sequence (summary + real prompt) natively.
+
+    The most recent few turns are kept verbatim so the model retains immediate
+    context (recent prompts, assistant replies, and which tools it called), but
+    tool *results* in those turns are stubbed (``<tool result omitted>``) to
+    control size — the call structure is preserved for API legality, only the
+    bulky output is dropped.
     """
     log_path = getattr(session, "log_path", None)
     if not log_path:
@@ -114,8 +120,9 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     if len(turns) <= 1:
         return CommandResult(message="上下文过短，无需压缩。")
 
-    # Keep the last turn intact; summarize the rest
-    keep_count = 1
+    # Keep the last few turns (user prompts + assistant text + tool-call
+    # structure with stubbed results); summarize the rest.
+    keep_count = min(3, len(turns) - 1)
     turns_to_keep = turns[-keep_count:]
     turns_to_summarize = turns[:-keep_count]
     summarize_events = [ev for turn in turns_to_summarize for ev in turn]
@@ -132,9 +139,10 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
     init_event = next((ev for ev in events if ev.get("type") == "init"), None)
 
     # Build the kept-turn events, excluding any init (kept once, up front) so
-    # the new log has exactly one init at the head.
-    kept_turn_events = [ev for turn in turns_to_keep for ev in turn
-                        if ev.get("type") != "init"]
+    # the new log has exactly one init at the head. Tool results are stubbed.
+    kept_turn_events = [_stub_tool_result(ev) for ev in (
+        ev for turn in turns_to_keep for ev in turn
+    ) if ev.get("type") != "init"]
 
     # Try LLM summarization
     config = kwargs.get("config")
@@ -164,6 +172,25 @@ def _handle_compact(session, args: str | None = None, **kwargs) -> CommandResult
         return CommandResult(message=f"已压缩上下文。摘要:\n{summary[:200]}")
     removed_chars = len(conversation_text)
     return CommandResult(message=f"已压缩上下文（移除约 {removed_chars} 字符）。")
+
+
+_TOOL_RESULT_STUB = "<tool result omitted>"
+
+
+def _stub_tool_result(event: dict) -> dict:
+    """Replace a completed tool_call_update's rawOutput with a stub.
+
+    The tool_call event (which tool was invoked, with what args) is kept
+    verbatim — only the bulky result text is stubbed, preserving the
+    assistant(tool_calls) → tool(stub) API sequence.
+    """
+    if event.get("type") != "tool_call_update":
+        return event
+    data = event.get("data", {})
+    if data.get("status") in ("completed", "failed") and "rawOutput" in data:
+        event = dict(event)
+        event["data"] = {**data, "rawOutput": _TOOL_RESULT_STUB}
+    return event
 
 
 def _backup_log(log_path: str) -> None:

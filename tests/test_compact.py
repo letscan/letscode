@@ -97,6 +97,19 @@ def _turn(prompt: str, answer: str) -> list[dict]:
     ]
 
 
+def _turn_with_tool(prompt: str, answer: str, tid: str, tool_name: str,
+                    tool_input: dict, result_text: str) -> list[dict]:
+    """A turn whose assistant reply includes a tool call + result."""
+    return [
+        {"type": "prompt", "data": [{"type": "text", "text": prompt}]},
+        {"type": "agent_message_chunk", "data": {"type": "text", "text": answer}},
+        {"type": "tool_call", "data": {"toolCallId": tid, "toolName": tool_name, "rawInput": tool_input}},
+        {"type": "tool_call_update", "data": {"toolCallId": tid, "status": "in_progress"}},
+        {"type": "tool_call_update", "data": {"toolCallId": tid, "status": "completed", "rawOutput": result_text}},
+        {"type": "result", "data": {"stopReason": "end_turn", "turns": 1, "toolCalls": 1}},
+    ]
+
+
 class _FakeSession:
     def __init__(self, log_path: str):
         self.log_path = log_path
@@ -213,9 +226,137 @@ class TestCompactReplayEndToEnd:
         model, messages = load_feed(str(log))
         assert model == "test-model"
         roles = [m["role"] for m in messages]
-        # summary(user) + kept prompt(user) + assistant
-        assert roles == ["user", "user", "assistant"], roles
+        # summary(user) leads, then kept turns. With 3 input turns and
+        # keep_count=min(3,2)=2, the last 2 turns are kept: p2/a2 + continue/ok.
+        # summary + p2 + a2 + continue + ok.
+        assert roles[0] == "user", "summary must lead as user"
+        assert roles[:2] == ["user", "user"], "summary + first kept prompt are consecutive user"
         assert "之前的进展" in messages[0]["content"]
+
+
+class TestKeepRecentTurns:
+    """The most recent 3 turns are kept (clamped when fewer turns exist)."""
+
+    def test_keeps_last_3_turns_when_5_input(self, tmp_path):
+        from letscode.acp.commands import _handle_compact
+
+        log = tmp_path / "session.jsonl"
+        _make_log(log, [_turn(f"p{i}", f"a{i}") for i in range(5)])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        events = [json.loads(l) for l in log.read_text("utf-8").strip().splitlines()]
+        prompts = [e for e in events if e["type"] == "prompt"]
+        # init + summary + prompts p2,p3,p4 (last 3 turns kept)
+        assert len(prompts) == 3
+        assert prompts[0]["data"][0]["text"] == "p2"
+        assert prompts[-1]["data"][0]["text"] == "p4"
+
+    def test_keep_count_clamps_when_few_turns(self, tmp_path):
+        """2 input turns → keep min(3, 1) = 1 turn."""
+        from letscode.acp.commands import _handle_compact
+
+        log = tmp_path / "session.jsonl"
+        _make_log(log, [_turn("p1", "a1"), _turn("p2", "a2")])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        events = [json.loads(l) for l in log.read_text("utf-8").strip().splitlines()]
+        prompts = [e for e in events if e["type"] == "prompt"]
+        assert len(prompts) == 1
+        assert prompts[0]["data"][0]["text"] == "p2"
+
+
+class TestToolResultStubbing:
+    """Tool results in kept turns are stubbed; tool-call structure is preserved."""
+
+    def test_tool_result_replaced_with_stub(self, tmp_path):
+        from letscode.acp.commands import _handle_compact, _TOOL_RESULT_STUB
+
+        log = tmp_path / "session.jsonl"
+        big_result = "X" * 5000
+        _make_log(log, [
+            _turn("earlier", "old"),
+            _turn_with_tool("read foo", "looking", "t1", "Read",
+                            {"file_path": "foo.py"}, big_result),
+        ])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        events = [json.loads(l) for l in log.read_text("utf-8").strip().splitlines()]
+        updates = [e for e in events if e["type"] == "tool_call_update"
+                   and e["data"].get("status") == "completed"]
+        assert len(updates) == 1
+        assert updates[0]["data"]["rawOutput"] == _TOOL_RESULT_STUB
+        # The big result must NOT appear in the compacted log
+        assert big_result not in log.read_text("utf-8")
+
+    def test_tool_call_event_kept_verbatim(self, tmp_path):
+        """The tool_call event (which tool, what args) survives compaction."""
+        from letscode.acp.commands import _handle_compact
+
+        log = tmp_path / "session.jsonl"
+        _make_log(log, [
+            _turn("earlier", "old"),
+            _turn_with_tool("read", "looking", "t1", "Read",
+                            {"file_path": "foo.py"}, "file contents"),
+        ])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        events = [json.loads(l) for l in log.read_text("utf-8").strip().splitlines()]
+        tool_calls = [e for e in events if e["type"] == "tool_call"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["data"]["toolName"] == "Read"
+        assert tool_calls[0]["data"]["rawInput"] == {"file_path": "foo.py"}
+
+    def test_stubbed_feed_replays_with_valid_tool_pairing(self, tmp_path):
+        """Stubbed results still produce a legal assistant(tool_calls) → tool sequence."""
+        from letscode.feed import load_feed
+        from letscode.acp.commands import _handle_compact
+
+        log = tmp_path / "session.jsonl"
+        _make_log(log, [
+            _turn("earlier", "old"),
+            _turn_with_tool("read", "looking", "t1", "Bash",
+                            {"command": "ls"}, "file1\nfile2\nfile3"),
+        ])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        _, messages = load_feed(str(log))
+        roles = [m["role"] for m in messages]
+        # summary(user), user(read), assistant(looking+tool_call), tool(stub)
+        assert roles == ["user", "user", "assistant", "tool"], roles
+        # tool_call_id pairing intact
+        tc_id = messages[2]["tool_calls"][0]["id"]
+        assert messages[3]["tool_call_id"] == tc_id
+        assert messages[3]["content"] == "<tool result omitted>"
+
+    def test_in_progress_update_not_affected(self, tmp_path):
+        """Only completed/failed tool_call_update gets stubbed; in_progress is status-only already."""
+        from letscode.acp.commands import _handle_compact
+
+        log = tmp_path / "session.jsonl"
+        _make_log(log, [
+            _turn("earlier", "old"),
+            _turn_with_tool("read", "looking", "t1", "Read",
+                            {"file_path": "foo.py"}, "contents"),
+        ])
+
+        with patch("letscode.acp.commands._try_llm_summarize", return_value="summary"):
+            _handle_compact(_FakeSession(str(log)), config=None)
+
+        events = [json.loads(l) for l in log.read_text("utf-8").strip().splitlines()]
+        in_progress = [e for e in events if e["type"] == "tool_call_update"
+                       and e["data"].get("status") == "in_progress"]
+        assert len(in_progress) == 1
+        assert "rawOutput" not in in_progress[0]["data"]
 
 
 # ---------------------------------------------------------------------------
