@@ -227,7 +227,58 @@ def _build_prompt_blocks(args) -> list[dict]:
     return blocks
 
 
+def _main_import_cc(argv: list[str]) -> int:
+    """`letscode import-cc <cc.jsonl> [--out path] [--report path]`.
+
+    Convert a Claude Code session transcript into a letscode session feed.
+    Default output is `.letscode/sessions/<cc-stem>.jsonl`; the analysis
+    report prints to stdout unless --report gives a file path.
+    """
+    import uuid
+    from .importers.cc import convert_cc_session
+    from .importers.report import render_report_md
+
+    p = argparse.ArgumentParser(
+        prog="letscode import-cc",
+        description="Convert a Claude Code session jsonl to a letscode session feed.",
+    )
+    p.add_argument("cc_session", help="Path to the Claude Code <session>.jsonl file")
+    p.add_argument("--out", help="Output letscode feed path (default: .letscode/sessions/<stem>.jsonl)")
+    p.add_argument("--report", help="Write the CC-vs-letscode analysis markdown to this path (default: stdout)")
+    args = p.parse_args(argv)
+
+    cc_path = Path(args.cc_session).resolve()
+    if not cc_path.is_file():
+        print(f"Error: {cc_path} not found", file=sys.stderr)
+        return 1
+
+    out_path = args.out
+    if not out_path:
+        sessions_dir = Path.cwd() / ".letscode" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        # Use a short uuid suffix so repeated imports of the same CC file don't collide.
+        out_path = str(sessions_dir / f"{cc_path.stem[:8]}_{uuid.uuid4().hex[:4]}.jsonl")
+
+    report = convert_cc_session(str(cc_path), out_path)
+    md = render_report_md(report)
+
+    if args.report:
+        Path(args.report).write_text(md, encoding="utf-8")
+        print(f"Report written to {args.report}", file=sys.stderr)
+    else:
+        print(md)
+
+    print(f"Converted {report.total_lines} records -> {report.converted_events} events", file=sys.stderr)
+    print(f"Feed written to {out_path}", file=sys.stderr)
+    return 0
+
+
 def main():
+    # Subcommand dispatch: `letscode import-cc ...` runs the Claude Code
+    # session importer and exits before the agent argparse runs.
+    if len(sys.argv) >= 2 and sys.argv[1] == "import-cc":
+        return _main_import_cc(sys.argv[2:])
+
     parser = argparse.ArgumentParser(
         prog="letscode",
         description="Lightweight Python AI agent harness",
