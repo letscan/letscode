@@ -109,7 +109,7 @@ Works with any OpenAI-compatible API (GPT, Gemini, GLM, DeepSeek, Qwen, local mo
 }
 ```
 
-The cache hit rate then shows in the per-turn stat footer (`· cache 99%`).
+The cache hit rate then shows inline in the per-turn stat footer (`2.7k tokens (99%cached)`).
 
 ### 2. Run
 

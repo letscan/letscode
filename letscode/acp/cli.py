@@ -25,5 +25,17 @@ def main() -> None:
         help="Append a token/timing summary as a markdown quote to each turn",
         action="store_true",
     )
+    parser.add_argument(
+        "--version", "-V",
+        help="Show version and exit",
+        action="store_true",
+        default=False,
+    )
     args = parser.parse_args()
+
+    if args.version:
+        from .. import __version__
+        print(f"letscode-acp {__version__}")
+        return
+
     run_acp_server(args.config, log_path=args.log, show_stat=args.show_stat)
