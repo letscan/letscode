@@ -1053,30 +1053,39 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
 
     if type_ == "tool_call_update":
         tc_id = data.get("toolCallId", "")
-        status = data.get("status", "")
+        status = data.get("status") or None
         cached = pending_tool_inputs.get(tc_id, {})
         inp = cached.get("input", {})
         name = cached.get("name", "")
 
-        title = None
-        if name:
-            title = _tool_result_title(name, inp, status)
+        # Build kwargs incrementally, only including fields that have a value.
+        # A streaming output chunk carries no status (the tool is already
+        # in_progress from the preceding tool_call event) and may carry only
+        # raw_output — passing status=None explicitly is fine for the schema,
+        # but omitting it entirely keeps the wire message minimal and avoids
+        # the pydantic literal-validation crash on '' that upstream may emit.
+        kw: dict = {"tool_call_id": tc_id}
 
-        content = None
+        title = _tool_result_title(name, inp, status) if name else None
+        if title is not None:
+            kw["title"] = title
+
+        if status is not None:
+            kw["status"] = status
+
         if status in ("completed", "failed"):
             content = _build_completed_content(name, inp, data)
             if content is None and "content" in data:
                 content = _content_to_tool_blocks(data["content"])
+            if content is not None:
+                kw["content"] = content
             pending_tool_inputs.pop(tc_id, None)
         elif "content" in data:
             content = _content_to_tool_blocks(data["content"])
+            if content is not None:
+                kw["content"] = content
 
-        return h.update_tool_call(
-            tool_call_id=tc_id,
-            title=title,
-            status=status,
-            content=content,
-        )
+        return h.update_tool_call(**kw)
 
     if type_ in ("user_message", "user_message_chunk"):
         # Injected user content: skill expansion prompts, compact summaries.
