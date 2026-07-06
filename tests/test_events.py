@@ -575,8 +575,24 @@ class TestStatFormatting:
     def test_format_stat_quote(self):
         from letscode.acp.server import _format_stat_quote
 
+        # No cache → no inline rate.
         quote = _format_stat_quote(3, 2700, 76.4)
         assert quote.strip() == "> Turn 3 | 2.7k tokens | 1m16s"
+
+    def test_format_stat_quote_with_cache_rate(self):
+        from letscode.acp.server import _format_stat_quote
+
+        # 2673 of 2700 prompt tokens cached → 99%; rate shown inline.
+        quote = _format_stat_quote(3, 2700, 76.4, cache_read=2673,
+                                   prompt_tokens=2700)
+        assert quote.strip() == "> Turn 3 | 2.7k tokens (99%cached) | 1m16s"
+
+    def test_format_stat_quote_no_rate_when_no_cache(self):
+        from letscode.acp.server import _format_stat_quote
+
+        # cache_read=0 → no inline rate (omitted, not "0%cached").
+        quote = _format_stat_quote(3, 2700, 76.4, cache_read=0, prompt_tokens=2700)
+        assert "cached" not in quote
 
 
 class TestModelContextWindowLookup:
@@ -695,3 +711,20 @@ class TestReplayStatQuote:
         data = {"usage": {"prompt_tokens": 1000}, "duration_ms": 500}
         q = _make_replay_stat_quote(data, prev_tokens=0, prev_turn=4)
         assert "Turn 5" in q
+
+    def test_replay_quote_includes_cache_rate(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        # prompt_tokens=5000, cache_read=4500 → 90% rate shown inline on replay.
+        data = {"usage": {"prompt_tokens": 5000, "cache_read_tokens": 4500},
+                "duration_ms": 2000}
+        q = _make_replay_stat_quote(data, prev_tokens=1000, prev_turn=1)
+        assert q is not None
+        assert "(90%cached)" in q
+
+    def test_replay_quote_no_rate_for_legacy_logs(self):
+        from letscode.acp.server import _make_replay_stat_quote
+        # Legacy log without cache fields → no inline rate.
+        data = {"usage": {"prompt_tokens": 5000}, "duration_ms": 2000}
+        q = _make_replay_stat_quote(data, prev_tokens=1000, prev_turn=1)
+        assert q is not None
+        assert "cached" not in q

@@ -21,6 +21,7 @@ $ letscode "add a /health endpoint to app.py"
 - **Event stream output** — JSONL structured logs, ACP-compatible
 - **Multi-turn sessions** — Resume from previous session logs with `--feed`
 - **Slash commands** — `/new` reset context, `/compact` compress context, `/undo` rollback last turn
+- **Prompt caching** — Per-model `cache` config (`auto`/`explicit`/`none`) with `cache_control` marker injection for providers that need it (Qwen/DashScope); per-turn cache hit rate shown in the stat footer
 
 ## Install
 
@@ -92,6 +93,23 @@ export OPENAI_BASE_URL="https://open.bigmodel.cn/api/coding/paas/v4"
 ```
 
 Works with any OpenAI-compatible API (GPT, Gemini, GLM, DeepSeek, Qwen, local models, etc.).
+
+**Prompt caching:** most providers cache the shared prompt prefix automatically — set `"cache": "auto"` (the default, correct for DeepSeek and GLM ≥4.6). Qwen/DashScope needs explicit `cache_control` markers, so set `"cache": "explicit"` on the provider:
+
+```json
+{
+  "providers": {
+    "dashscope": {
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key": "YOUR_DASHSCOPE_API_KEY",
+      "cache": "explicit",
+      "models": [{"model": "qwen3.5-plus-2026-04-20", "max_tokens": 65536}]
+    }
+  }
+}
+```
+
+The cache hit rate then shows in the per-turn stat footer (`· cache 99%`).
 
 ### 2. Run
 

@@ -63,12 +63,18 @@ def _human_duration(seconds: float) -> str:
     return f"{s}s"
 
 
-def _format_stat_quote(big_turn: int, tokens: int, elapsed: float) -> str:
+def _format_stat_quote(big_turn: int, tokens: int, elapsed: float,
+                       cache_read: int = 0, prompt_tokens: int = 0) -> str:
     """Build the per-turn stat summary as a markdown blockquote line.
 
-    Example: '> Turn 3 | 2.7k tokens | 1m16s'
+    When the turn hit cache, the hit rate is shown inline next to the token
+    count, e.g. '> Turn 3 | 2.7k tokens (95%cached) | 1m16s'. No rate is
+    shown when the provider reported no cache read for the turn.
     """
-    return f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens | {_human_duration(elapsed)}\n"
+    rate = (cache_read * 100 // prompt_tokens) if (cache_read and prompt_tokens) else 0
+    cached_note = f" ({rate}%cached)" if cache_read else ""
+    return (f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens"
+            f"{cached_note} | {_human_duration(elapsed)}\n")
 
 
 def _make_replay_stat_quote(data: dict, prev_tokens: int, prev_turn: int) -> str | None:
@@ -86,7 +92,9 @@ def _make_replay_stat_quote(data: dict, prev_tokens: int, prev_turn: int) -> str
     # A result event may lack usage (e.g. error turns); skip those.
     if not prompt_tokens and not duration_ms:
         return None
-    return _format_stat_quote(prev_turn + 1, delta, elapsed)
+    cache_read = usage.get("cache_read_tokens", 0)
+    return _format_stat_quote(prev_turn + 1, delta, elapsed,
+                              cache_read=cache_read, prompt_tokens=prompt_tokens)
 
 
 def _get_modes() -> list[dict]:
@@ -517,7 +525,10 @@ class LetscodeAgent:
             self._session_prompt_tokens[session_id] = turn_prompt_tokens
             big_turn = self._session_big_turn.get(session_id, 0) + 1
             self._session_big_turn[session_id] = big_turn
-            quote = _format_stat_quote(big_turn, delta, elapsed)
+            cache_read = (usage_data or {}).get("cache_read_tokens", 0)
+            quote = _format_stat_quote(big_turn, delta, elapsed,
+                                       cache_read=cache_read,
+                                       prompt_tokens=turn_prompt_tokens)
             try:
                 await self._conn.session_update(
                     session_id=session_id,

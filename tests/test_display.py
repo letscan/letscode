@@ -406,3 +406,45 @@ class TestFormatResult:
     def test_no_dim_in_plain_mode(self):
         result = _with_env({"NO_COLOR": "1"}, lambda: format_result("Bash", "output", True, {}))
         assert "\033[" not in result
+
+
+class TestResultFooterCacheRate:
+    """The stderr stat footer shows the cache hit rate inline next to the
+    input token count when the turn hit cache; omits it otherwise. Format:
+
+      📊 tokens: 906 (98%cached) in / 48 out / 954 total
+    """
+
+    def _footer(self, usage: dict) -> str:
+        """Render the footer for a fake result event and return the stripped text."""
+        from letscode.subscribers import CliOutputSubscriber
+        sub = _with_env({"NO_COLOR": "1"}, lambda: CliOutputSubscriber())
+
+        import io
+        buf = io.StringIO()
+        old = sys.stderr
+        sys.stderr = buf
+        try:
+            sub("result", {"stopReason": "end_turn", "usage": usage})
+        finally:
+            sys.stderr = old
+        return _strip_ansi(buf.getvalue()).strip()
+
+    def test_no_rate_when_no_cache(self):
+        out = self._footer({"prompt_tokens": 906, "completion_tokens": 48,
+                            "total_tokens": 954, "cache_read_tokens": 0})
+        assert "cached" not in out
+        assert "906 in" in out and "48 out" in out
+
+    def test_cache_rate_inline(self):
+        # 896 of 906 prompt tokens cached → 98%.
+        out = self._footer({"prompt_tokens": 906, "completion_tokens": 48,
+                            "total_tokens": 954, "cache_read_tokens": 896})
+        assert "(98%cached)" in out
+
+    def test_cache_rate_floors_to_zero(self):
+        # 1 of 1000 — rounds down to 0%, still shown because cache_read > 0.
+        out = self._footer({"prompt_tokens": 1000, "completion_tokens": 10,
+                            "total_tokens": 1010, "cache_read_tokens": 1})
+        assert "(0%cached)" in out
+

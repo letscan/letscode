@@ -447,21 +447,16 @@ class CliOutputSubscriber:
         if not usage:
             return
         from .tools._display import _dim
+        prompt = usage.get("prompt_tokens", 0)
         cr = usage.get("cache_read_tokens", 0)
-        cw = usage.get("cache_write_tokens", 0)
-        cache_note = ""
-        if cr or cw:
-            # Show cache hit % of the prompt input — the metric that matters
-            # for the upcoming cache-efficiency work. Write tokens are billed
-            # at a premium so they're shown too.
-            cache_note = f" (cache: {cr} hit"
-            if cw:
-                cache_note += f"/{cw} write"
-            cache_note += ")"
+        # Cache hit rate shown inline next to the input count when the turn
+        # actually hit cache; omitted otherwise.
+        rate = (cr * 100 // prompt) if (cr and prompt) else 0
+        cached_note = f" ({rate}%cached)" if cr else ""
         summary = (
-            f"📊 tokens: {usage.get('prompt_tokens', 0)} in / "
+            f"📊 tokens: {prompt}{cached_note} in / "
             f"{usage.get('completion_tokens', 0)} out / "
-            f"{usage.get('total_tokens', 0)} total{cache_note}"
+            f"{usage.get('total_tokens', 0)} total"
         )
         sys.stderr.write(_dim(summary) + "\n")
         sys.stderr.flush()

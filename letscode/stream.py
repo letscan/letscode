@@ -191,10 +191,13 @@ def _normalize_usage(usage) -> dict:
 
     Provider field-name variants handled here:
       - OpenAI / Qwen / GLM: ``prompt_tokens_details.cached_tokens`` (read)
-      - DeepSeek-native: ``prompt_cache_hit_tokens`` (read) /
-        ``prompt_cache_miss_tokens`` (≈ write, the non-cached prefix)
+      - DeepSeek-native: ``prompt_cache_hit_tokens`` (read). DeepSeek reports
+        no cache-write/creation field — only ``prompt_cache_miss_tokens``
+        (the non-cached prefix), which is NOT a cache write (missed tokens
+        may or may not persist). cache_write stays 0 for DeepSeek.
       - Anthropic: ``cache_read_input_tokens`` (read) /
         ``cache_creation_input_tokens`` (write)
+      - Qwen explicit: ``prompt_tokens_details.cache_creation_input_tokens`` (write)
 
     The SDK preserves extra provider fields at runtime via ``extra="allow"``,
     so the non-OpenAI fields are reachable through ``model_dump()``.
@@ -216,10 +219,15 @@ def _normalize_usage(usage) -> dict:
         or 0
     ) or 0
 
-    # Cache writes (creation). DeepSeek has no explicit write field, so we use
-    # prompt_cache_miss_tokens (the prefix that wasn't cached this turn) as an
-    # upper-bound proxy only when there was no hit — this avoids double-counting
-    # on the common steady-state path where most of the prefix is cached.
+    # Cache writes (creation). This is the "tokens written to the cache" count
+    # reported by Anthropic (cache_creation_input_tokens) and Qwen
+    # (prompt_tokens_details.cache_creation_input_tokens), both billed at a
+    # premium (~1.25x). DeepSeek does NOT report a write/creation field — it
+    # only reports prompt_cache_miss_tokens (the prefix that didn't hit cache
+    # this turn), which is NOT the same as a cache write (missed tokens may or
+    # may not get persisted depending on DeepSeek's internal landing policy).
+    # We therefore leave cache_write at 0 for DeepSeek rather than mislabeling
+    # miss as creation.
     cache_write = (
         ptd.get("cache_creation_input_tokens")
         or raw.get("cache_creation_input_tokens")

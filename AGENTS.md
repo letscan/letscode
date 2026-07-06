@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents working with code in this reposi
 
 ## Project Overview
 
-letscode is a lightweight Python AI agent harness (v0.2.2) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
+letscode is a lightweight Python AI agent harness (v0.3.1) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
 
 - **Language**: Python 3.11+ (managed with `uv`)
 - **Core dependencies**: `openai>=1.0`, `mcp>=1.27.0`, `agent-client-protocol>=0.10.0`
@@ -59,6 +59,7 @@ The agent loop (`run_agent`) streams LLM responses, extracts tool calls, execute
 - MCP tools are merged with built-in tools at startup
 - Edit tool enforces read-before-edit: files must be read with Read before Edit is allowed on them (tracked via `_read_files` set)
 - `prompt_blocks` parameter accepts structured content blocks (text, resource_link, image) alongside plain text prompts
+- Before each LLM call, `cache_markers.apply_cache_markers()` injects `cache_control` breakpoints when the model's `cache` config is `explicit` (no-op for `auto`/`none`); see Prompt Cache Markers below
 
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
@@ -111,15 +112,17 @@ CLI flags: `--preset safe|default|risk`, `--no-sandbox` to disable entirely.
 ### ACP Server (`acp/`)
 Agent-Client Protocol server using the `agent-client-protocol` SDK, launched via the `letscode-acp` entry point. The server communicates over stdio with a client (e.g. IDE extensions).
 
-- **`server.py`** (`LetscodeAgent`): Implements ACP protocol methods — `initialize`, `new_session`, `prompt`, `cancel`, `load_session`, `list_sessions`, `set_session_mode`, `set_config_option`, `close_session`. The `prompt` method spawns `letscode --event-stream --prompt-format json` as a subprocess and translates its JSONL events into ACP `SessionUpdate` objects via `_translate_event`.
+- **`server.py`** (`LetscodeAgent`): Implements ACP protocol methods — `initialize`, `new_session`, `prompt`, `cancel`, `load_session`, `list_sessions`, `set_session_mode`, `set_config_option`, `close_session`. The `prompt` method spawns `letscode --event-stream --prompt-format json` as a subprocess and translates its JSONL events into ACP `SessionUpdate` objects via `_translate_event`. Per-turn usage is surfaced both as a `UsageUpdate` (drives the client's context-fill gauge) and, when `show_stat` is set, as a markdown blockquote appended to the agent message (`> Turn N | Xk tokens | Ym · cache NN%`); the same footer is reconstructed on session-resume replay via `_make_replay_stat_quote`.
 - **`commands.py`**: Slash command registry (`SlashCommandRegistry`) with built-in commands `/new` (clear context), `/compact` (LLM-summarized context compression), `/undo` (roll back last turn). `/compact` preserves skill activation events through compaction. Commands are dispatched before the agent subprocess; results are sent as ACP updates.
 - **`session.py`**: Session metadata persistence (`Session` dataclass) stored as JSON in `.letscode/sessions/`. Cursor-based pagination for `list_sessions`.
 
 ### MCP Integration (`mcp/client.py`)
 Supports stdio, HTTP/SSE, and streamable HTTP MCP servers. Configured in `config.json` under `mcp_servers`. Tools are discovered dynamically and prefixed with `mcp__`. Sub-agents skip MCP (`--no-mcp`) to avoid duplicate connections.
 
-### Event Stream (`events.py`)
+### Event Stream (`events.py`, `stream.py`)
 JSONL event emitter for structured output. Always writes to `.letscode/logs/{timestamp}_{uuid}.jsonl`. With `--event-stream`, also outputs to stdout. Event types: `session/prompt`, `agent_message_chunk`, `tool_call`, `tool_call_update`, `user_message`, `error`, `session/result`. `emit_tool_update` records the result as-is (no independent externalization) since results are already processed by `_process_tool_result`. `emit_user_message` emits synthetic user messages (e.g., expanded skill prompts). Data structures (ContentBlock, tool kind, status) are ACP-compatible.
+
+`stream.py` owns the streaming LLM call (`consume_stream_async`) and token-usage normalization. `_normalize_usage()` flattens the per-provider cache field-name variants into a single `(cache_read_tokens, cache_write_tokens, reasoning_tokens)` triple: OpenAI/Qwen/GLM `prompt_tokens_details.cached_tokens`, DeepSeek `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`, Anthropic `cache_read_input_tokens`/`cache_creation_input_tokens`. The normalized usage flows to `EventHub.record_usage` (session accumulation), the CLI stderr footer (`· cache NN%`), the ACP `Usage` object, and the `call_llm` log line.
 
 ### Multi-Turn (`feed.py`, `feed_util.py`)
 - **`feed.py`**: Loads JSONL event logs and reconstructs the full conversation history (messages list). Used with `--feed <path>` to continue a previous session, optionally with `--append` to write new events into the same log file. Handles `user_message` events for skill content. Legacy logs (with `result_file` externalization and full skill content in `tool_call_update.result`) are backward-compatible.
