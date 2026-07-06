@@ -163,10 +163,15 @@ class EventHub:
         })
 
     def emit_agent_thought_chunk(self, text: str) -> None:
-        """Emit a reasoning/thinking chunk (e.g. GLM reasoning_content).
+        """Emit a reasoning/thinking chunk (e.g. GLM reasoning_content,
+        DeepSeek thinking).
 
-        Symmetric to emit_agent_message_chunk. Display-only: thoughts are
-        NOT fed back into the LLM history (MessageSubscriber ignores them).
+        Symmetric to emit_agent_message_chunk. MessageSubscriber accumulates
+        these and attaches them as ``reasoning_content`` on the assistant
+        message at turn boundaries, so the reasoning chain is replayed back
+        to the model on subsequent turns. This is required by DeepSeek's
+        thinking-mode contract for any history turn containing a tool call
+        (omitting it returns HTTP 400); harmless on plain turns.
         """
         self.emit("agent_thought_chunk", {
             "type": "text",

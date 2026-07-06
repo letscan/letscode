@@ -241,6 +241,7 @@ class MessageSubscriber:
 
         # Accumulation state
         self._text_parts: list[str] = []
+        self._thought_parts: list[str] = []  # reasoning/thinking chunks → reasoning_content
         self._pending_tools: dict[str, dict] = {}  # tid -> {id, name, arguments, input, result?}
         self._tool_order: list[str] = []
         self._extra_after_tool: dict[str, list[dict]] = {}  # tid -> [user msgs]
@@ -272,6 +273,18 @@ class MessageSubscriber:
         if self._tool_order:
             self._flush_turn()
         self._text_parts.append(data.get("text", ""))
+
+    def _on_agent_thought_chunk(self, data: dict) -> None:
+        # Reasoning/thinking chunks (e.g. GLM reasoning_content, DeepSeek
+        # thinking). Accumulated into reasoning_content on the assistant
+        # message at flush time. DeepSeek's thinking-mode contract REQUIRES
+        # reasoning_content to be sent back in any history turn that contains
+        # a tool call (omitting it returns HTTP 400); for plain turns it is
+        # accepted but ignored, so attaching it unconditionally is safe and
+        # simplest. See https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+        if self._tool_order:
+            self._flush_turn()
+        self._thought_parts.append(data.get("text", ""))
 
     def _on_tool_call(self, data: dict) -> None:
         tid = data.get("toolCallId", "")
@@ -336,7 +349,10 @@ class MessageSubscriber:
     # -- turn management --
 
     def _flush_turn(self) -> None:
-        if not self._text_parts and not self._tool_order:
+        # Reasoning chunks can arrive without an accompanying text/tool turn
+        # (a model that only emitted thinking). Treat accumulated thoughts as
+        # sufficient to produce an assistant message.
+        if not self._text_parts and not self._tool_order and not self._thought_parts:
             return
 
         # Each text part is one line of stream output with its trailing "\n"
@@ -349,6 +365,11 @@ class MessageSubscriber:
             "role": "assistant",
             "content": full_text or None,
         }
+        # Attach the reasoning/thinking chain if present. DeepSeek requires
+        # this on tool-call turns; harmless on plain turns. Same newline-join
+        # semantics as text above.
+        if self._thought_parts:
+            assistant_msg["reasoning_content"] = "\n".join(self._thought_parts)
         if self._tool_order:
             assistant_msg["tool_calls"] = [
                 {
@@ -385,6 +406,7 @@ class MessageSubscriber:
                 self.messages.append(msg)
 
         self._text_parts = []
+        self._thought_parts = []
         self._pending_tools = {}
         self._tool_order = []
         self._extra_after_tool = {}
