@@ -24,6 +24,7 @@
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "api_key": "YOUR_DASHSCOPE_API_KEY_HERE",
       "cache": "explicit",
+      "extra_body": {"preserve_thinking": true},
       "models": [
         {
           "model": "qwen3.5-plus-2026-04-20",

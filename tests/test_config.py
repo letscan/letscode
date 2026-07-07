@@ -205,6 +205,69 @@ class TestCacheFields:
         assert cfg.cache == "explicit"
 
 
+class TestExtraBody:
+    """extra_body — a dict forwarded verbatim to the API request body.
+
+    Lets a user inject vendor extensions (e.g. DashScope's preserve_thinking)
+    without code changes. Provider- and model-level dicts are deep-merged,
+    model keys overriding provider keys.
+    """
+
+    def test_defaults_none(self, tmp_path):
+        path = _write_config(tmp_path, {"p": _provider("u", "k", [{"model": "a"}])})
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body is None
+
+    def test_provider_level_loaded(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k",
+                  "extra_body": {"preserve_thinking": True},
+                  "models": [{"model": "a"}]},
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body == {"preserve_thinking": True}
+
+    def test_model_level_loaded(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a",
+                                       "extra_body": {"enable_thinking": False}}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body == {"enable_thinking": False}
+
+    def test_provider_model_deep_merge(self, tmp_path):
+        # Provider sets one key, model sets another → both present.
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k",
+                  "extra_body": {"preserve_thinking": True},
+                  "models": [{"model": "a",
+                              "extra_body": {"enable_thinking": False}}]},
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body == {"preserve_thinking": True, "enable_thinking": False}
+
+    def test_model_overrides_provider_same_key(self, tmp_path):
+        # Same key on both → model wins.
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k",
+                  "extra_body": {"preserve_thinking": True},
+                  "models": [{"model": "a",
+                              "extra_body": {"preserve_thinking": False}}]},
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body == {"preserve_thinking": False}
+
+    def test_no_extra_body_no_crash_on_merge(self, tmp_path):
+        # Provider has extra_body, model has none → provider wins, no crash.
+        path = _write_config(tmp_path, {
+            "p": {"base_url": "u", "api_key": "k",
+                  "extra_body": {"preserve_thinking": True},
+                  "models": [{"model": "a"}]},
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.extra_body == {"preserve_thinking": True}
+
+
 class TestListModels:
     def test_returns_models_and_default(self, tmp_path):
         path = _write_config(tmp_path, {

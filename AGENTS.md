@@ -64,7 +64,7 @@ The agent loop (`run_agent`) streams LLM responses, extracts tool calls, execute
 ### Configuration (`config.py`)
 Priority: CLI `--model` > config file `default_model` > first model entry. `OPENAI_API_KEY` and `OPENAI_BASE_URL` env vars always override file config. `max_tokens` is capped at 131,072. `list_models()` helper returns all configured models for `--models` CLI flag.
 
-`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key`/`cache` belong to the provider, `max_tokens`/`context_window`/`vision` to the model):
+`config.json` schema (two-layer `providers` → `models`; `base_url`/`api_key`/`cache`/`extra_body` belong to the provider, `max_tokens`/`context_window`/`vision` to the model):
 ```json
 {
   "default_model": "model-id",
@@ -74,6 +74,7 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
       "base_url": "...",
       "api_key": "...",
       "cache": "auto|explicit|none",
+      "extra_body": {"vendor_field": "value"},
       "models": [{"model": "...", "max_tokens": 200000, "context_window": 200000, "vision": false}]
     }
   },
@@ -84,6 +85,7 @@ Priority: CLI `--model` > config file `default_model` > first model entry. `OPEN
 }
 ```
 **Prompt cache mode** (`cache` field, provider- or model-level): `auto` (default) relies on server-side prefix caching — correct for DeepSeek and GLM ≥4.6. `explicit` opts a model into Anthropic-style `cache_control: {type: ephemeral}` markers on content blocks — required for Qwen/DashScope, which returns `cached_tokens=None` without them. `none` disables cache handling. Markers are injected at the single message-assembly site in `agent.py` via `cache_markers.apply_cache_markers()` using the `system_plus_rolling` strategy (3 breakpoints: system + 2nd-to-last + last non-system message) — the only placement achieving zero `cache_creation` across turns in A/B testing (see `docs/cache-multiturn-probe-2026-07-06.md`). The `cache` field cascades provider→model (model overrides provider), matching `base_url`/`api_key`.
+**Vendor extension body** (`extra_body` field, provider- or model-level): a dict forwarded verbatim to the OpenAI SDK's `create(extra_body=...)`, landing as top-level fields in the HTTP request body. Use it for provider-specific options that the SDK doesn't model natively. Common case: DashScope's `preserve_thinking` makes Qwen (qwen3.6-plus/3.7-plus only) read the `reasoning_content` replayed from prior turns — by default Qwen silently ignores it (harmless, but no benefit). Note enabling `preserve_thinking` counts prior reasoning toward input tokens and may reduce cache hit rate. Provider- and model-level `extra_body` dicts are deep-merged (model keys override provider keys).
 **Vision proxy**: `vision: false` on a model + a top-level `vision_model` set → image prompts are first routed through the vision model for text descriptions, spliced back into the prompt (`[Image-N]` markers + appended descriptions), so text-only models can reason about image content. `vision: true` models receive images inline. `call_llm()` (`llm.py`) is the shared single-shot LLM call used here and by future one-off uses (title/summary generation, compaction).
 Internally `config.py` flattens `providers` into per-model dicts (merging each provider's `base_url`/`api_key` into its models), so `list_models()`/`load_config()` and their callers see the same flat per-model shape. Note: `rules` keys use camelCase (`allowRead`, `denyCmd`) — not the snake_case names shown in the README.
 

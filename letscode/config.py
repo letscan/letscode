@@ -19,6 +19,7 @@ class ModelConfig:
     rules: dict | None = None
     vision: bool = False
     cache: str = "auto"
+    extra_body: dict | None = None
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -91,6 +92,12 @@ def _flatten_providers(providers: dict) -> list[dict]:
             p_cache = provider.get("cache")
             if p_cache is not None:
                 entry.setdefault("cache", p_cache)
+            # extra_body dicts deep-merge: provider values form the base,
+            # model-level keys override (both end up as request body fields).
+            p_extra = provider.get("extra_body")
+            m_extra = entry.get("extra_body")
+            if p_extra:
+                entry["extra_body"] = {**p_extra, **(m_extra or {})}
             flat.append(entry)
     return flat
 
@@ -167,6 +174,7 @@ def load_config(
             rules=rules,
             vision=bool(entry.get("vision", False)),
             cache=entry.get("cache", "auto"),
+            extra_body=entry.get("extra_body") or None,
         )
     elif target:
         cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)
