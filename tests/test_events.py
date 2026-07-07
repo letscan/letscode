@@ -594,6 +594,14 @@ class TestStatFormatting:
         quote = _format_stat_quote(3, 2700, 76.4, cache_read=0, prompt_tokens=2700)
         assert "cached" not in quote
 
+    def test_format_stat_quote_cancelled(self):
+        from letscode.acp.server import _format_stat_quote
+
+        # A cancelled turn has no usage data (subprocess killed before the
+        # result event); show 'cancelled' in place of the token count.
+        quote = _format_stat_quote(3, 0, 5.0, cancelled=True)
+        assert quote.strip() == "> Turn 3 | cancelled | 5s"
+
 
 class TestModelContextWindowLookup:
     """LetscodeAgent resolves context_window from loaded config entries."""

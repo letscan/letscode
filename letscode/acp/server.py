@@ -64,13 +64,20 @@ def _human_duration(seconds: float) -> str:
 
 
 def _format_stat_quote(big_turn: int, tokens: int, elapsed: float,
-                       cache_read: int = 0, prompt_tokens: int = 0) -> str:
+                       cache_read: int = 0, prompt_tokens: int = 0,
+                       cancelled: bool = False) -> str:
     """Build the per-turn stat summary as a markdown blockquote line.
 
     When the turn hit cache, the hit rate is shown inline next to the token
     count, e.g. '> Turn 3 | 2.7k tokens (95%cached) | 1m16s'. No rate is
     shown when the provider reported no cache read for the turn.
+
+    A cancelled turn (user hit stop) has no usage data — the subprocess was
+    SIGKILLed before writing the result event — so it shows 'cancelled' in
+    place of the token count, e.g. '> Turn 3 | cancelled | 5s'.
     """
+    if cancelled:
+        return f"\n> Turn {big_turn} | cancelled | {_human_duration(elapsed)}\n"
     rate = (cache_read * 100 // prompt_tokens) if (cache_read and prompt_tokens) else 0
     cached_note = f" ({rate}%cached)" if cache_read else ""
     return (f"\n> Turn {big_turn} | {_human_tokens(tokens)} tokens"
@@ -523,28 +530,32 @@ class LetscodeAgent:
             self._agent_proc = None
             self._current_session_id = None
 
-        # A user-initiated cancel SIGKILLs the subprocess (exit -9); that's the
-        # expected outcome, not an error. Skip the error/exit-code checks so the
-        # prompt() returns cleanly with stop_reason="cancelled".
-        if self._cancelled:
-            return PromptResponse(stop_reason="cancelled")
-
-        if error_msg:
-            raise RequestError.internal_error({"details": error_msg})
-
-        if exit_code:
-            raise RequestError.internal_error({"details": f"Agent exited with code {exit_code}"})
-
         elapsed = time.monotonic() - start_time
 
+        # A user-initiated cancel SIGKILLs the subprocess (exit -9); that's the
+        # expected outcome, not an error. Skip the error/exit-code checks so the
+        # prompt() returns cleanly with stop_reason="cancelled". We still emit
+        # the stat footer (below) so a cancelled turn leaves a marker — without
+        # usage data (the kill happens before the result event is written).
+        cancelled = self._cancelled
+
+        if not cancelled:
+            if error_msg:
+                raise RequestError.internal_error({"details": error_msg})
+            if exit_code:
+                raise RequestError.internal_error({"details": f"Agent exited with code {exit_code}"})
+
         # Context-window usage update (drives a fill gauge in the client UI).
-        if context_window and self._conn is not None and turn_prompt_tokens:
+        # On cancel we fall back to the last recorded prompt_tokens so the
+        # gauge reflects the context accumulated so far.
+        usage_for_gauge = turn_prompt_tokens or self._session_prompt_tokens.get(session_id, 0)
+        if context_window and self._conn is not None and usage_for_gauge:
             try:
                 await self._conn.session_update(
                     session_id=session_id,
                     update=UsageUpdate(
                         session_update="usage_update",
-                        used=turn_prompt_tokens, size=context_window,
+                        used=usage_for_gauge, size=context_window,
                     ),
                 )
             except Exception:
@@ -554,13 +565,14 @@ class LetscodeAgent:
         if self.show_stat and self._conn is not None:
             prev = self._session_prompt_tokens.get(session_id, 0)
             delta = max(turn_prompt_tokens - prev, 0)
-            self._session_prompt_tokens[session_id] = turn_prompt_tokens
+            self._session_prompt_tokens[session_id] = turn_prompt_tokens or prev
             big_turn = self._session_big_turn.get(session_id, 0) + 1
             self._session_big_turn[session_id] = big_turn
             cache_read = (usage_data or {}).get("cache_read_tokens", 0)
             quote = _format_stat_quote(big_turn, delta, elapsed,
                                        cache_read=cache_read,
-                                       prompt_tokens=turn_prompt_tokens)
+                                       prompt_tokens=turn_prompt_tokens,
+                                       cancelled=cancelled)
             try:
                 await self._conn.session_update(
                     session_id=session_id,
@@ -569,6 +581,8 @@ class LetscodeAgent:
             except Exception:
                 logger.warning("Failed to emit stat quote", exc_info=True)
 
+        if cancelled:
+            stop_reason = "cancelled"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     async def _handle_rename(self, session_id: str, args: str | None) -> None:
