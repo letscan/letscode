@@ -129,10 +129,8 @@ async def run_agent(
                 hub.emit_tool_update(tool_id, status="in_progress")
 
             final_result: ToolResult | None = None
-            streamed = False
             async for event in tools.execute(tool_name, tc.arguments):
                 if isinstance(event, ToolOutput):
-                    streamed = True
                     if hub:
                         hub.emit_tool_update(
                             tool_id, raw_output=event.content,
@@ -153,14 +151,13 @@ async def run_agent(
             success = final_result.success
             status = "completed" if success else "failed"
 
-            if streamed:
-                # Result event carries no rawOutput — consumers reconstruct
-                # from preceding process-output events
-                if hub:
-                    hub.emit_tool_update(tool_id, status=status)
-            else:
-                if hub:
-                    hub.emit_tool_update(tool_id, status=status, raw_output=result)
+            # Streamed tools (Bash) accumulate per-chunk output as the LLM sees
+            # it; final_result.content is the same full output the tool returns.
+            # Send it on the terminal event so ACP/consumers always have the
+            # authoritative result — downstream subscribers prefer rawOutput and
+            # only fall back to reconstructing from stream chunks when absent.
+            if hub:
+                hub.emit_tool_update(tool_id, status=status, raw_output=result)
 
         # Flush msg_sub to incorporate assistant + tool messages into its list
         msg_sub.flush()
