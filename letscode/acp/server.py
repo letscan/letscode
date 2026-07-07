@@ -1114,6 +1114,16 @@ def _translate_event(event: dict, pending_tool_inputs: dict[str, dict]) -> Any:
             if content is not None:
                 kw["content"] = content
             pending_tool_inputs.pop(tc_id, None)
+        elif status == "in_progress":
+            # Placeholder content so the ACP client can show an expand affordance
+            # while the tool runs. Zed only renders the disclosure chevron (and
+            # thus makes raw_input reachable) once `content` is non-empty; an
+            # in_progress tool otherwise has empty content, so its card stays
+            # collapsed with no way to see the input. The placeholder occupies
+            # content slot 0 and is positionally replaced by the real result on
+            # completion (update_from_acp pairs old[0]↔new[0]), so it never
+            # lingers.
+            kw["content"] = [h.tool_content(h.text_block("…"))]
         elif "content" in data:
             content = _content_to_tool_blocks(data["content"])
             if content is not None:
@@ -1210,6 +1220,14 @@ def _build_completed_content(
                 result_text = data.get("result_summary", "")
         if result_text:
             return [h.tool_content(h.text_block(f"```\n{result_text}\n```"))]
+
+    # Fallback for tools without a dedicated branch (Glob, Grep, Skill, Agent,
+    # and MCP tools): surface rawOutput as a text block so it replaces the
+    # in_progress placeholder. Without this, completion sends no content and
+    # the placeholder ellipsis lingers in the card's Output slot.
+    result_text = data.get("rawOutput", data.get("result", ""))
+    if result_text:
+        return [h.tool_content(h.text_block(result_text))]
 
     return None
 
