@@ -145,6 +145,17 @@ class LetscodeAgent:
                 return cw if isinstance(cw, int) and cw > 0 else None
         return None
 
+    def _model_effort_options(self, model_id: str | None) -> list[str] | None:
+        """Look up a model's declared effort_options (reasoning tiers)."""
+        target = model_id or self._default_model
+        if not target:
+            return None
+        for m in self._models:
+            if m.get("model") == target:
+                opts = m.get("effort_options")
+                return opts if isinstance(opts, list) and opts else None
+        return None
+
     def _build_commands(self, cwd: str) -> SlashCommandRegistry:
         """Create a per-session command registry with builtins + cwd-specific skills."""
         registry = create_builtin_registry()
@@ -183,6 +194,22 @@ class LetscodeAgent:
                     options=[
                         SessionConfigSelectOption(value=m["model"], name=m["model"])
                         for m in self._models
+                    ],
+                )
+            )
+        # Reasoning effort tiers — only when the active model declares them.
+        effort_opts = self._model_effort_options(session.model)
+        if effort_opts:
+            options.append(
+                SessionConfigOptionSelect(
+                    id="reasoning_effort",
+                    name="Reasoning Effort",
+                    category="thought_level",
+                    type="select",
+                    current_value=session.reasoning_effort or effort_opts[0],
+                    options=[
+                        SessionConfigSelectOption(value=o, name=o.capitalize())
+                        for o in effort_opts
                     ],
                 )
             )
@@ -378,6 +405,11 @@ class LetscodeAgent:
             cmd.extend(["--model", session.model])
         if session.mode != "default":
             cmd.extend(["--preset", session.mode])
+        # Reasoning effort: only forward when the model declares tiers; the
+        # CLI resolves the tier to the reasoning_effort extra_body field.
+        effort_opts = self._model_effort_options(session.model)
+        if effort_opts:
+            cmd.extend(["--effort", session.reasoning_effort or effort_opts[0]])
         cmd.extend(["--max-turns", str(_DEFAULT_MAX_TURNS)])
 
         from .session import _sessions_dir
@@ -776,6 +808,8 @@ class LetscodeAgent:
             # initial usage_update — covers both new (used=0) and loaded
             # (used=<last turn>) sessions.
             asyncio.create_task(self._deferred_send_usage(session_id))
+        elif config_id == "reasoning_effort":
+            session.reasoning_effort = str(value) or None
         else:
             return None
 

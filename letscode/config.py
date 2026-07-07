@@ -20,6 +20,7 @@ class ModelConfig:
     vision: bool = False
     cache: str = "auto"
     extra_body: dict | None = None
+    effort_options: list[str] | None = None
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -175,6 +176,7 @@ def load_config(
             vision=bool(entry.get("vision", False)),
             cache=entry.get("cache", "auto"),
             extra_body=entry.get("extra_body") or None,
+            effort_options=entry.get("effort_options") or None,
         )
     elif target:
         cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)

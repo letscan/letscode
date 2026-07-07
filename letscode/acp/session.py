@@ -16,6 +16,7 @@ class Session:
     title: str | None = None
     mode: str = "default"
     model: str | None = None
+    reasoning_effort: str | None = None
 
 
 def _sessions_dir(cwd: str) -> Path:
@@ -52,6 +53,7 @@ def save_session(session: Session) -> None:
         "log_path": session.log_path,
         "mode": session.mode,
         "model": session.model,
+        "reasoning_effort": session.reasoning_effort,
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -71,6 +73,7 @@ def load_session_meta(session_id: str, cwd: str) -> Session | None:
             title=data.get("title"),
             mode=data.get("mode", "default"),
             model=data.get("model"),
+            reasoning_effort=data.get("reasoning_effort"),
         )
     except (json.JSONDecodeError, KeyError):
         return None
@@ -104,6 +107,7 @@ def list_sessions(
                 title=data.get("title"),
                 mode=data.get("mode", "default"),
                 model=data.get("model"),
+                reasoning_effort=data.get("reasoning_effort"),
             ))
         except (json.JSONDecodeError, KeyError):
             continue

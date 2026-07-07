@@ -268,6 +268,41 @@ class TestExtraBody:
         assert cfg.extra_body == {"preserve_thinking": True}
 
 
+class TestEffortOptions:
+    """effort_options — list of supported reasoning-effort tiers for a model.
+    The first item is the default. Absent means the model exposes no knob.
+    """
+
+    def test_defaults_none(self, tmp_path):
+        path = _write_config(tmp_path, {"p": _provider("u", "k", [{"model": "a"}])})
+        cfg, _ = load_config(path, "a")
+        assert cfg.effort_options is None
+
+    def test_loaded_as_list(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a",
+                                       "effort_options": ["high", "max"]}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.effort_options == ["high", "max"]
+
+    def test_first_item_is_default(self, tmp_path):
+        # The list order is meaningful: callers treat index 0 as the default.
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a",
+                                       "effort_options": ["medium", "high", "max"]}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.effort_options[0] == "medium"
+
+    def test_empty_list_treated_as_none(self, tmp_path):
+        path = _write_config(tmp_path, {
+            "p": _provider("u", "k", [{"model": "a", "effort_options": []}]),
+        })
+        cfg, _ = load_config(path, "a")
+        assert cfg.effort_options is None  # empty → falsy → None
+
+
 class TestListModels:
     def test_returns_models_and_default(self, tmp_path):
         path = _write_config(tmp_path, {

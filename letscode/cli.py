@@ -42,6 +42,22 @@ async def _async_main(args):
             config.preset = args.preset
         config.verbose = args.verbose
 
+        # Reasoning effort: when the model declares effort_options, resolve the
+        # effective tier (--effort flag, else the first listed option = default)
+        # and merge it into extra_body as the reasoning_effort field. Providers
+        # that don't recognize reasoning_effort simply ignore it.
+        if config.effort_options:
+            tier = args.effort
+            if tier is None:
+                tier = config.effort_options[0]
+            elif tier not in config.effort_options:
+                raise SystemExit(
+                    f"Effort {tier!r} not in model's effort_options "
+                    f"{config.effort_options}."
+                )
+            config.extra_body = {**(config.extra_body or {}),
+                                 "reasoning_effort": tier}
+
         # Sub-agents skip MCP to avoid duplicate connections and cleanup issues
         if args.no_mcp:
             mcp_servers = {}
@@ -361,6 +377,12 @@ def main():
         "--preset", "-p",
         help="Sandbox preset: safe (read-only), default (workspace writable), risk (full R/W)",
         choices=["safe", "default", "risk"],
+        default=None,
+    )
+    parser.add_argument(
+        "--effort",
+        help="Reasoning effort tier (model must declare effort_options in config). "
+             "Defaults to the first listed option when not specified.",
         default=None,
     )
     parser.add_argument(
