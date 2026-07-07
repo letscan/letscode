@@ -4,7 +4,7 @@ This file provides guidance to AI coding agents working with code in this reposi
 
 ## Project Overview
 
-letscode is a lightweight Python AI agent harness (v0.3.1) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
+letscode is a lightweight Python AI agent harness (v0.3.2) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
 
 - **Language**: Python 3.11+ (managed with `uv`)
 - **Core dependencies**: `openai>=1.0`, `mcp>=1.27.0`, `agent-client-protocol>=0.10.0`

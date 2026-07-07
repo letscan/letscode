@@ -396,7 +396,7 @@ wheels = [
 
 [[package]]
 name = "letscode"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
