@@ -4,10 +4,10 @@ This file provides guidance to AI coding agents working with code in this reposi
 
 ## Project Overview
 
-letscode is a lightweight Python AI agent harness (v0.3.2) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
+letscode is a lightweight Python AI agent harness (v0.4.0) that implements a ReAct-pattern agent loop over OpenAI-compatible APIs. It provides an LLM → Tool Execution → Result Feedback cycle for autonomous software engineering tasks.
 
 - **Language**: Python 3.11+ (managed with `uv`)
-- **Core dependencies**: `openai>=1.0`, `mcp>=1.27.0`, `agent-client-protocol>=0.10.0`
+- **Core dependencies**: `openai>=1.0`, `mcp>=1.27.0`, `agent-client-protocol>=0.10.0`, `pyyaml>=6.0`
 - **Default model**: GLM-5-Turbo via 智谱AI API
 
 ## Common Commands
@@ -28,6 +28,13 @@ letscode -c config.json -m glm-5-turbo -w /path/to/workspace -v "prompt"
 
 # List available models from config
 letscode --models [-c config.json]
+
+# List available agent cards (built-in + project)
+letscode --list-agents
+
+# Run as a specific agent card (replaces system prompt, restricts tools/rules)
+letscode --as Explore "find all async functions"
+letscode --as Plan "plan a caching layer for config.py"
 
 # Structured prompt input (ACP-compatible content blocks)
 letscode --prompt-format json '[{"type":"text","text":"hello"}]'
@@ -97,10 +104,10 @@ Each tool module exposes `SCHEMA` (OpenAI function-calling schema) and `execute(
 - **Grep** prefers system `rg` (ripgrep), falls back to shell `grep -E`; count mode is robust against malformed lines
 - **Skill** loads and executes skill files from `.claude/skills/` and `.agents/skills/` directories (`.claude/` takes precedence); supports quoted, multi-line, and colon-containing frontmatter values
 
-### Security Layer (`rules.py`, `sandbox.py`, `tools/_types.py`)
+### Security Layer (`rules.py`, `sandbox.py`, `tools/runner.py`)
 Three-level access control:
 
-1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Config keys use camelCase: `allowRead`, `denyRead`, `allowWrite`, `denyWrite`, `allowCmd`, `denyCmd`. Deny rules always override allow rules. Shell expansion detection blocks `$(...)`, backticks, and process substitution. Command splitting handles quoted strings correctly. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
+1. **Rules engine** (`rules.py`): Glob-based allow/deny rules for paths and commands, loaded from `config.json` `rules` field. Config keys use camelCase: `allowRead`, `denyRead`, `allowWrite`, `denyWrite`, `allowCmd`, `denyCmd`. **Most-specific pattern wins**: a more specific allow overrides a broader deny (the documented "escape hatch"), ties break to deny. `_pattern_specificity(pattern)` ranks patterns by `(anchored, depth, prefix_len)` — literal-path-segment depth before the first wildcard, generalizing nginx's longest-prefix-match. Only `**/`-prefixed pure wildcards rank as unanchored; bare filenames count as relative-anchored (depth 1). Shell expansion detection blocks `$(...)`, backticks, and process substitution. Command splitting handles quoted strings correctly. Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets (hardcoded baseline, highest priority — overrides any rule). `check_cmd` still uses deny-always-wins (commands have no path hierarchy).
 
 2. **Sandbox** (`sandbox.py`): macOS Seatbelt (`sandbox-exec`) profiles applied to Bash tool subprocesses. Three presets:
    - `safe` — read-only everywhere, no writes
@@ -108,7 +115,7 @@ Three-level access control:
    - `risk` — full filesystem R/W (secrets still denied)
    - `list_presets()` returns preset metadata for ACP mode selection
 
-3. **Security state** (`tools/_types.py`): Module-level globals (`_preset`, `_sandbox`, `_rules`) set once at agent startup. Tool executors call `check_read_allowed` / `check_write_allowed` / `check_cmd_allowed` before acting.
+3. **Security state** (`tools/runner.py`): Instance attributes on `ToolRunner` (`self._rules`, `self._preset`, `self._sandbox`, `self._tool_allowlist`, `self._skill_allowlist`), set at construction. Tool executors call `check_read` / `check_write` / `check_cmd` before acting.
 
 CLI flags: `--preset safe|default|risk`, `--no-sandbox` to disable entirely.
 
@@ -135,7 +142,46 @@ JSONL event emitter for structured output. Always writes to `.letscode/logs/{tim
 Injects `cache_control: {type: ephemeral}` markers into the messages list for providers that need them explicitly (Qwen/DashScope, Anthropic). Called once per turn from `agent.py` after message assembly. Uses the `system_plus_rolling` strategy (3 breakpoints: system + 2nd-to-last + last non-system message), the only placement that achieves zero `cache_creation` across turns in A/B testing. No-op for `cache: auto|none` (DeepSeek, GLM — server-side caching). All helpers are idempotent so feed-replay (which rebuilds messages) never double-marks. See `docs/cache-probe-2026-07-05.md` (per-provider activation) and `docs/cache-multiturn-probe-2026-07-06.md` (strategy A/B test).
 
 ### System Prompt (`prompt.py`)
-8-section prompt. The `_env_section` dynamically injects CWD, git status, platform, shell, and OS version at runtime.
+9-section prompt (intro, system, doing_tasks, actions, using_tools, tone_style, output_efficiency, env, skills). `_env_section` dynamically injects CWD, git status, platform, shell, OS version, and model id; `_skills_section` lists discoverable skills (filtered by the card's `skill_allowlist` when active). `build_system_prompt(model_id)` assembles all sections; an AgentCard body replaces this entirely (see AgentCard).
+
+### AgentCard (`agent_card.py`, `builtin_agents/`)
+An AgentCard defines a specialized agent persona: its system prompt, available tools, permission boundaries, and MCP/skill access. Cards are Markdown files with YAML frontmatter, loaded via `--as <Name>`:
+
+```bash
+letscode --as Review "review tools/runner.py"
+```
+
+**Format** (`agents/<Name>.md`):
+```markdown
+---
+name: Reviewer
+description: Read-only code review specialist
+tools: [Read, Grep, Glob]
+skills: [review, lint]
+mcp_servers: [playwright]
+preset: safe
+rules:
+  denyWrite: ["/**"]
+---
+You are a code review specialist. ...
+```
+
+**Frontmatter fields** (7): `name`/`description` (metadata), `tools` (whitelist over built-in + `mcp__`-prefixed tools), `skills` (whitelist enforced at Skill execution), `mcp_servers` (whitelist over configured servers), `preset` (sandbox preset), `rules` (camelCase, deep-merged with config.rules). Unset whitelist fields mean "no restriction".
+
+**Single merge point**: `apply_card(config, mcp_servers, card) -> CardOverrides` merges the card onto loaded config once, up front in `cli.py`. `card=None` returns all-default overrides, so the no-card path needs no branching. The 7 card fields do not overlap with existing CLI knobs (`--model`/`--effort`/`--no-sandbox`), except `preset` (`--preset` > card.preset > config.preset) and `mcp_servers` (`--no-mcp` zeros out after the card filter).
+
+**Priority**: CLI flags > AgentCard > `config.json`, per-field independent.
+
+**Built-in cards** ship in `letscode/builtin_agents/` (Explore, Plan, Review, SetupZed), read via `importlib.resources`. A project `agents/<Name>.md` with the same stem overrides a built-in (case-insensitive). `--list-agents` shows all available cards with a `(built-in)` tag. No `--as` → no card → `build_system_prompt(model)` directly (no template layer).
+
+### Template Variables (`prompt_renderer.py`)
+AgentCard bodies may reference three predefined variables, rendered only on the `--as` path (the no-card path skips rendering entirely):
+
+- `{{ env }}` — the environment section (CWD/git/platform/shell/OS/model)
+- `{{ skills }}` — the available-skills listing (filtered by the card's skill whitelist)
+- `{{ default_system_prompt }}` — the full built-in default prompt (escape hatch for cards that want to keep most default behavior and prepend a few lines)
+
+Unknown `{{ names }}` are left untouched. `render_card_template(body, model_id, skill_allowlist)` does the substitution via regex; `_VAR_RE` matches `{{ word }}` with optional inner whitespace.
 
 ## Key Design Patterns
 

@@ -8,7 +8,7 @@ $ letscode "add a /health endpoint to app.py"
 
 **Why letscode?**
 
-- **Lightweight** — ~2K lines of Python, three dependencies (`openai`, `mcp`, `agent-client-protocol`). No vector databases, no framework lock-in.
+- **Lightweight** — ~2K lines of Python, four dependencies (`openai`, `mcp`, `agent-client-protocol`, `pyyaml`). No vector databases, no framework lock-in.
 - **CLI-first** — Runs in your terminal. Pipe prompts in, read structured JSONL out. Fits into any workflow.
 - **ACP-ready** — Ships `letscode-acp`, an [Agent Client Protocol](https://github.com/AI-Utils/agent-client-protocol) server for IDE and client integration (VS Code extensions, etc.).
 
@@ -16,6 +16,7 @@ $ letscode "add a /health endpoint to app.py"
 
 - **ReAct agent loop** — LLM calls tools, sees results, decides when to stop
 - **8 built-in tools** — Bash, Read, Write, Edit, Glob, Grep, Skill, Agent (sub-agent delegation)
+- **AgentCards** — Define specialized agents (reviewer, planner, explorer) as Markdown + YAML; ships built-in Explore/Plan/Review/SetupZed
 - **MCP integration** — Connect stdio and HTTP/SSE MCP servers for extra tools
 - **3-layer security** — Rule engine (path/command allowlist) + macOS Seatbelt sandbox + tool-level permission checks
 - **Event stream output** — JSONL structured logs, ACP-compatible
@@ -146,6 +147,8 @@ letscode [options] "prompt"
 | `--no-mcp` | Skip MCP server connections |
 | `-v, --verbose` | Show tool call details |
 | `--models` | List available models from config |
+| `--list-agents` | List available agent cards (built-in + project) |
+| `--as <name>` | Run as a specific agent card (replaces system prompt, restricts tools/rules) |
 | `--event-stream` | Output as JSONL event stream |
 | `--prompt-format` | Prompt format: `text` (default) or `json` (structured content blocks) |
 | `--feed` | Resume from a previous session log |
@@ -177,18 +180,50 @@ letscode --feed .letscode/logs/session.jsonl --append "continue the task"
 
 Secret paths (`.ssh/`, `.aws/`, `.gnupg/`, `.env`) are blocked on all presets.
 
-Custom rules in `config.json`:
+Custom rules in `config.json` (keys are camelCase):
 
 ```json
 {
   "rules": {
-    "allow_paths": ["src/**", "tests/**"],
-    "deny_paths": ["secrets/**"],
-    "allow_commands": ["ls", "cat", "git"],
-    "deny_commands": ["rm -rf"]
+    "allowRead": ["src/**", "tests/**"],
+    "denyWrite": ["secrets/**"],
+    "allowCmd": ["ls", "cat", "git"],
+    "denyCmd": ["rm -rf"]
   }
 }
 ```
+
+Rules use **most-specific-wins**: a more specific allow (e.g. `plan.md`) overrides a broader deny (e.g. `/**`), ties break to deny. This lets AgentCards pair `preset: safe` with a narrow `allowWrite` to carve out write access for specific files.
+
+## AgentCards
+
+An AgentCard defines a specialized agent: its system prompt, tool whitelist, and permission boundary. Create one as `agents/<Name>.md`:
+
+```markdown
+---
+name: Reviewer
+description: Read-only code review specialist
+tools: [Read, Grep, Glob]
+preset: safe
+rules:
+  denyWrite: ["/**"]
+---
+You are a code review specialist. Cite file:line for every comment.
+
+{{ env }}
+```
+
+Run with `--as`:
+
+```bash
+letscode --as Reviewer "review tools/runner.py"
+```
+
+**Built-in cards** ship with letscode: `Explore` (read-only codebase search), `Plan` (investigate + write a plan file), `Review` (read-only code review), `SetupZed` (configure Zed editor integration). List them with `letscode --list-agents`. A project `agents/<Name>.md` overrides a built-in of the same name.
+
+Card bodies support three template variables: `{{ env }}`, `{{ skills }}`, and `{{ default_system_prompt }}` (the full built-in prompt — useful when you want to keep most defaults and prepend a few lines).
+
+**Priority**: CLI flags > AgentCard > `config.json`, per-field. For example `--preset risk` overrides the card's `preset: safe`.
 
 ## Architecture
 
