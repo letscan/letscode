@@ -253,6 +253,68 @@ class TestBuiltinCards:
 
 
 # ---------------------------------------------------------------------------
+# Card preset: overrides config.preset (CLI --preset still wins)
+# ---------------------------------------------------------------------------
+
+class TestCardPreset:
+    """A card's `preset` frontmatter field overrides config.json's preset.
+
+    Priority chain: CLI --preset > card.preset > config.preset. The card's
+    preset flows through apply_card -> ModelConfig.preset -> merge_rules so the
+    rules engine sees the card's intent (e.g. Plan's safe + allowWrite plan.md).
+    """
+
+    def test_parse_card_preset(self):
+        text = "---\nname: X\npreset: safe\n---\nbody"
+        card = _parse_card(text)
+        assert card.preset == "safe"
+
+    def test_parse_card_no_preset(self):
+        text = "---\nname: X\n---\nbody"
+        card = _parse_card(text)
+        assert card.preset is None
+
+    def test_apply_card_preset_passthrough(self):
+        cfg = ModelConfig(model="m", api_key="k", preset="default")
+        card = AgentCard(preset="safe")
+        ov = apply_card(cfg, {}, card)
+        assert ov.preset == "safe"
+
+    def test_apply_card_no_preset_is_none(self):
+        cfg = ModelConfig(model="m", api_key="k", preset="default")
+        card = AgentCard(preset=None, body="b")
+        ov = apply_card(cfg, {}, card)
+        assert ov.preset is None
+
+    def test_no_card_preset_is_none(self):
+        cfg = ModelConfig(model="m", api_key="k", preset="default")
+        ov = apply_card(cfg, {}, None)
+        assert ov.preset is None
+
+    def test_plan_builtin_has_safe_preset(self):
+        plan = load_builtin_card("Plan")
+        assert plan.preset == "safe"
+
+    def test_plan_card_rules_engine_end_to_end(self, tmp_path, monkeypatch):
+        """The motivating case: Plan's preset=safe + allowWrite plan.md paths
+        yields write access only to plan files, not source code."""
+        from letscode.rules import merge_rules, load_rules, check_write
+
+        monkeypatch.chdir(tmp_path)
+        # Simulate cli.py: config.preset=default, then card overrides to safe
+        config = ModelConfig(model="m", api_key="k", preset="default")
+        card = load_builtin_card("Plan")
+        ov = apply_card(config, {}, card)
+        config.preset = ov.preset
+        rules = merge_rules(config.preset, load_rules(ov.rules_raw))
+
+        assert check_write("plan.md", rules) is None                 # allowed
+        assert check_write(".letscode/plans/x.md", rules) is None    # allowed
+        assert check_write("src/main.py", rules) is not None         # denied
+        assert check_write(".env", rules) is not None                # secrets denied
+
+
+# ---------------------------------------------------------------------------
 # apply_card: the single merge point
 # ---------------------------------------------------------------------------
 

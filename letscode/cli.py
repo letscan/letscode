@@ -43,6 +43,12 @@ async def _async_main(args):
         overrides = apply_card(config, mcp_servers, card)
         mcp_servers = overrides.mcp_servers
 
+        # Card preset overrides config.json's preset (safe/default/risk); the
+        # CLI --preset flag still wins over both. Applied to ModelConfig here
+        # so the merge_rules(preset, ...) call below sees the card's intent.
+        if overrides.preset is not None:
+            config.preset = overrides.preset
+
         # CLI overrides for security settings
         if args.no_sandbox:
             config.sandbox = False

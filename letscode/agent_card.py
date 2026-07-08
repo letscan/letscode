@@ -35,6 +35,7 @@ class AgentCard:
     skills: list[str] | None = None
     mcp_servers: list[str] | None = None
     rules: dict | None = None
+    preset: str | None = None
     body: str = ""
 
 
@@ -44,11 +45,15 @@ class CardOverrides:
 
     - ``mcp_servers``: card whitelist applied (or unchanged when no card)
     - ``rules_raw``: config.rules deep-merged with card.rules (camelCase dict)
+    - ``preset``: card's sandbox preset (safe/default/risk), or None → caller
+      keeps config.preset. Applied to ModelConfig by the caller so that
+      merge_rules(preset, ...) sees the card's intent.
     - ``system_prompt``: card body, or None → caller falls back to built-in prompt
     - ``tool_allowlist`` / ``skill_allowlist``: None means unrestricted
     """
     mcp_servers: dict = field(default_factory=dict)
     rules_raw: dict | None = None
+    preset: str | None = None
     system_prompt: str | None = None
     tool_allowlist: set[str] | None = None
     skill_allowlist: set[str] | None = None
@@ -165,6 +170,8 @@ def _parse_card(text: str) -> AgentCard:
         card.mcp_servers = [str(s) for s in data["mcp_servers"]]
     if isinstance(data.get("rules"), dict):
         card.rules = data["rules"]
+    if isinstance(data.get("preset"), str):
+        card.preset = data["preset"]
     return card
 
 
@@ -233,6 +240,7 @@ def apply_card(
         return CardOverrides(
             mcp_servers=dict(mcp_servers),
             rules_raw=config.rules,
+            preset=None,
             system_prompt=None,
             tool_allowlist=None,
             skill_allowlist=None,
@@ -248,6 +256,7 @@ def apply_card(
     return CardOverrides(
         mcp_servers=filtered,
         rules_raw=_merge_rules_raw(config.rules, card.rules),
+        preset=card.preset,
         system_prompt=card.body or None,
         tool_allowlist=set(card.tools) if card.tools is not None else None,
         skill_allowlist=set(card.skills) if card.skills is not None else None,
