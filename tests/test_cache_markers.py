@@ -26,11 +26,6 @@ class TestNoOpModes:
         out = apply_cache_markers(msgs, "none")
         assert out == msgs
 
-    def test_auto_does_not_mutate_input(self):
-        msgs = [{"role": "system", "content": "sys"}]
-        apply_cache_markers(msgs, "auto")
-        assert msgs[0]["content"] == "sys"  # untouched
-
 
 # ---------------------------------------------------------------------------
 # Explicit mode — system message

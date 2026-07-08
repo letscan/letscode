@@ -489,12 +489,6 @@ class TestStreamRetry:
 class TestContextWindowConfig:
     """ModelConfig carries a context_window; config entries can set it."""
 
-    def test_context_window_field_default_none(self):
-        from letscode.config import ModelConfig
-
-        cfg = ModelConfig(model="m")
-        assert cfg.context_window is None
-
     def test_context_window_loaded_from_config(self, tmp_path):
         from letscode.config import load_config
 

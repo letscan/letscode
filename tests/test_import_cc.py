@@ -299,8 +299,11 @@ class TestReport:
         assert "letscode 暂不支持的 CC 特性" in md
         assert "thinking blocks" in md
         assert "Agent subagent" in md
-        # The report reflects real counts
-        assert "1" in md  # at least one tool_use / thinking / etc.
+        # The report reflects real counts from the fixture above
+        assert report.thinking_blocks_dropped == 1
+        assert report.tool_use_blocks == 1
+        assert report.tool_results == 1
+        assert report.user_prompts == 1
 
 
 # ---------------------------------------------------------------------------

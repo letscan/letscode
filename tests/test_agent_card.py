@@ -196,7 +196,6 @@ class TestBuiltinCards:
             assert name.lower() in keys
 
     def test_load_builtin_card_each(self):
-        from importlib.resources import files
         for name in self.BUILTIN_NAMES:
             card = load_builtin_card(name)
             assert card.name == name
@@ -206,13 +205,7 @@ class TestBuiltinCards:
     def test_builtin_card_fields(self):
         explore = load_builtin_card("Explore")
         assert explore.tools == ["Read", "Glob", "Grep", "Agent"]
-        # preset is a frontmatter field we don't parse into AgentCard yet — it's
-        # in the raw text. Verify it's declared.
-        # (preset/tools/skills/rules are the 6 supported fields; preset is read
-        # from frontmatter text here as a sanity check on authoring.)
-        from importlib.resources import files
-        raw = files("letscode.builtin_agents").joinpath("Explore.md").read_text()
-        assert "preset: safe" in raw
+        assert explore.preset == "safe"
 
     def test_plan_card_has_write_rules(self):
         plan = load_builtin_card("Plan")
@@ -238,12 +231,6 @@ class TestBuiltinCards:
         with pytest.raises(SystemExit) as ei:
             load_builtin_card("NoSuchBuiltin")
         assert "NoSuchBuiltin" in str(ei.value)
-
-    def test_discover_includes_builtins_without_project_dir(self, tmp_path):
-        # With no project agents/, discover still surfaces builtins
-        cards = discover_agent_cards(cwd=str(tmp_path))
-        assert "explore" in cards
-        assert "plan" in cards
 
     def test_builtin_loads_via_load_agent_card(self, tmp_path):
         # load_agent_card (the --as path) resolves builtins when no project

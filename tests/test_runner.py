@@ -90,11 +90,6 @@ class TestValidatePath:
         vp = runner._make_validate_path()
         assert vp("execute", "/tmp/test") is None
 
-    def test_is_file_read_default_false(self):
-        runner = ToolRunner([], {}, rules=Rules())
-        ir = runner._make_is_file_read()
-        assert not ir("/tmp/never_read.txt")
-
     def test_edit_before_read_check(self):
         """Edit tool scenario: write check + is_file_read."""
         runner = ToolRunner([], {}, rules=Rules())

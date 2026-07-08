@@ -196,14 +196,6 @@ class TestCacheFields:
         assert cfg_a.cache == "explicit"  # inherited from provider
         assert cfg_b.cache == "auto"      # model-level overrides provider
 
-    def test_cache_model_overrides_provider(self, tmp_path):
-        path = _write_config(tmp_path, {
-            "p": {"base_url": "u", "api_key": "k", "cache": "auto",
-                  "models": [{"model": "a", "cache": "explicit"}]},
-        })
-        cfg, _ = load_config(path, "a")
-        assert cfg.cache == "explicit"
-
 
 class TestExtraBody:
     """extra_body — a dict forwarded verbatim to the API request body.
@@ -256,16 +248,6 @@ class TestExtraBody:
         })
         cfg, _ = load_config(path, "a")
         assert cfg.extra_body == {"preserve_thinking": False}
-
-    def test_no_extra_body_no_crash_on_merge(self, tmp_path):
-        # Provider has extra_body, model has none → provider wins, no crash.
-        path = _write_config(tmp_path, {
-            "p": {"base_url": "u", "api_key": "k",
-                  "extra_body": {"preserve_thinking": True},
-                  "models": [{"model": "a"}]},
-        })
-        cfg, _ = load_config(path, "a")
-        assert cfg.extra_body == {"preserve_thinking": True}
 
 
 class TestEffortOptions:

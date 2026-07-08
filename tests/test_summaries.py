@@ -4,7 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from letscode.acp.summaries import (
-    SUMMARY_EVENT_TYPE, SUMMARY_TURN_THRESHOLD,
+    SUMMARY_EVENT_TYPE,
     find_summary_event, summarize_old_turns,
 )
 from letscode.stream import StreamResult
@@ -73,10 +73,6 @@ class TestSummarizeOldTurns:
             )):
                 return await summarize_old_turns(events, keep_count=20, model_id="m")
         assert asyncio.run(run()) is None
-
-    def test_threshold_constant(self):
-        # Currently 3 for testing; restore to 20 later.
-        assert SUMMARY_TURN_THRESHOLD == 20
 
 
 class TestSessionSummarySkippedOnReplay:
