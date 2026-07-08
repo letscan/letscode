@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .agent import run_agent
+from .agent_card import apply_card, discover_agent_cards, load_agent_card
 from .config import load_config, list_models
 from .events import (
     EventHub,
@@ -34,6 +35,13 @@ async def _async_main(args):
 
     try:
         config, mcp_servers = load_config(args.config, args.model)
+
+        # AgentCard: merge card with (config, mcp_servers) once, up front.
+        # CLI overrides below run after apply_card, so CLI > card naturally
+        # (e.g. --no-mcp zeros out the card-filtered mcp_servers).
+        card = load_agent_card(args.agent) if args.agent else None
+        overrides = apply_card(config, mcp_servers, card)
+        mcp_servers = overrides.mcp_servers
 
         # CLI overrides for security settings
         if args.no_sandbox:
@@ -124,14 +132,26 @@ async def _async_main(args):
             if mcp_servers:
                 await mcp.connect_all(mcp_servers, quiet=args.event_stream)
 
-            # Build security rules
-            user_rules = load_rules(config.rules)
+            # Build security rules (card rules already merged into rules_raw)
+            user_rules = load_rules(overrides.rules_raw)
             rules = merge_rules(config.preset, user_rules)
+
+            # AgentCard tool whitelist: filter built-in tools (MCP tools are
+            # filtered in ToolRunner.definitions by the same allowlist).
+            if overrides.tool_allowlist is None:
+                tool_defs, execs = TOOL_DEFINITIONS, EXECUTORS
+            else:
+                allow = overrides.tool_allowlist
+                tool_defs = [
+                    d for d in TOOL_DEFINITIONS
+                    if d.get("function", {}).get("name") in allow
+                ]
+                execs = {k: v for k, v in EXECUTORS.items() if k in allow}
 
             # Create ToolRunner
             tool_runner = ToolRunner(
-                definitions=TOOL_DEFINITIONS,
-                executors=EXECUTORS,
+                definitions=tool_defs,
+                executors=execs,
                 mcp=mcp,
                 rules=rules,
                 preset=config.preset,
@@ -142,15 +162,29 @@ async def _async_main(args):
                     "sandbox": config.sandbox,
                     "verbose": args.verbose,
                 },
+                tool_allowlist=overrides.tool_allowlist,
+                skill_allowlist=overrides.skill_allowlist,
             )
 
-            # Build system_prompt (feed scenario uses feed model)
+            # Build system_prompt (feed scenario uses feed model).
+            #   - AgentCard body: render {{ env }} / {{ skills }} /
+            #     {{ default_system_prompt }} variables against the card.
+            #   - No card: assemble the built-in prompt directly (no template
+            #     layer — unchanged behavior).
             model = config.model
             if args.feed:
                 from .feed import load_feed
                 feed_model, _ = load_feed(args.feed)
                 model = feed_model or model
-            system_prompt = build_system_prompt(model)
+            if overrides.system_prompt is not None:
+                from .prompt_renderer import render_card_template
+                system_prompt = render_card_template(
+                    overrides.system_prompt,
+                    model_id=model,
+                    skill_allowlist=overrides.skill_allowlist,
+                )
+            else:
+                system_prompt = build_system_prompt(model)
 
             # Vision proxy: if the active model can't see images but a
             # vision_model is configured, route each image through it and splice
@@ -312,6 +346,20 @@ def main():
         default=False,
     )
     parser.add_argument(
+        "--list-agents",
+        help="List available agent cards (from agents/) and exit",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--as",
+        dest="agent",
+        help="Run as the named agent card (from agents/<Name>.md). The card's "
+             "frontmatter overrides tools/skills/mcp_servers/rules and its body "
+             "becomes the system prompt.",
+        default=None,
+    )
+    parser.add_argument(
         "--config", "-c",
         help="Path to config file (JSON)",
         default=None,
@@ -417,6 +465,25 @@ def main():
         for m in models:
             marker = " (default)" if m["model"] == default_model else ""
             print(f"{m['model']}{marker}")
+        return
+
+    if args.list_agents:
+        cards = discover_agent_cards()
+        if not cards:
+            print("(no agent cards found; create agents/<Name>.md)")
+            return
+        # Lazy import to avoid YAML parse cost on the --models path
+        from .agent_card import _parse_card
+        for stem_lower, path in sorted(cards.items()):
+            is_builtin = "builtin_agents" in str(path)
+            tag = " (built-in)" if is_builtin else ""
+            try:
+                card = _parse_card(path.read_text(encoding="utf-8"))
+                label = card.name or getattr(path, "stem", path.name[:-3])
+                desc = f" — {card.description}" if card.description else ""
+            except Exception:
+                label, desc = getattr(path, "stem", path.name), " (parse error)"
+            print(f"{label}{tag}{desc}")
         return
 
     if not args.prompt and not args.text and not args.image:

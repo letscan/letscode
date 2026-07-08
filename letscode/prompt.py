@@ -161,16 +161,23 @@ def _env_section(model_id: str) -> str:
     )
 
 
-def _skills_section() -> str:
+def _skills_section(skill_allowlist: set[str] | None = None) -> str:
     """Inject available skills (name + description) for model-driven discovery.
 
     Only name + description are injected — the model uses these to decide
     whether to trigger a skill. The Skill tool resolves SKILL.md by name at
     execution time, so the path is withheld to save context.
+
+    When ``skill_allowlist`` is set (an AgentCard restricts skills), only the
+    named skills are listed — the prompt's skill catalog then matches what the
+    Skill tool will actually permit at execution time.
     """
     from .tools.skill import get_skill_list
 
     skills = get_skill_list()
+    if skill_allowlist is not None:
+        allow = {s.lower() for s in skill_allowlist}
+        skills = [s for s in skills if s["name"].lower() in allow]
     if not skills:
         return ""
     lines = [

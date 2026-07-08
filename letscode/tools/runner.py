@@ -39,6 +39,8 @@ class ToolRunner:
         preset: str = "default",
         sandbox: bool = True,
         agent_config: dict | None = None,
+        tool_allowlist: set[str] | None = None,
+        skill_allowlist: set[str] | None = None,
     ):
         self._definitions = definitions
         self._executors = executors
@@ -48,11 +50,23 @@ class ToolRunner:
         self._preset = preset
         self._sandbox = sandbox
         self._agent_config = agent_config or {}
+        # AgentCard whitelists. tool_allowlist filters which tool definitions
+        # are exposed to the LLM (applied here over MCP defs; built-in defs are
+        # pre-filtered in cli.py). skill_allowlist blocks Skill tool calls for
+        # skills not named by the card. None = unrestricted.
+        self._tool_allowlist = tool_allowlist
+        self._skill_allowlist = skill_allowlist
 
     @property
     def definitions(self) -> list[dict]:
         mcp_defs = self._mcp.get_tool_definitions() if self._mcp else []
-        return self._definitions + mcp_defs
+        all_defs = self._definitions + mcp_defs
+        if self._tool_allowlist is None:
+            return all_defs
+        return [
+            d for d in all_defs
+            if d.get("function", {}).get("name") in self._tool_allowlist
+        ]
 
     @property
     def rules(self) -> Rules:
@@ -105,6 +119,21 @@ class ToolRunner:
             command = args.get("command", "")
             if err := check_cmd(command, self._rules):
                 yield ToolResult(content=err, success=False)
+                return
+
+        # 2b. AgentCard skill whitelist: block Skill calls for skills the card
+        # did not name. Case-insensitive to match skill.execute's resolution.
+        if name == "Skill" and self._skill_allowlist is not None:
+            requested = args.get("skill", "").lstrip("/").lower()
+            allowed = {s.lower() for s in self._skill_allowlist}
+            if requested not in allowed:
+                yield ToolResult(
+                    content=(
+                        f"<error>Skill {requested!r} not allowed by agent card. "
+                        f"Allowed: {', '.join(sorted(allowed))}</error>"
+                    ),
+                    success=False,
+                )
                 return
 
         # 3. Build security callbacks

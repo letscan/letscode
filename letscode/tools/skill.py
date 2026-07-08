@@ -163,7 +163,7 @@ def _expand_template(template: str, args: str | None) -> str:
     return template
 
 
-def execute(args: dict[str, Any]) -> str:
+def execute(args: dict[str, Any], **_) -> str:
     skill_name = args.get("skill", "").lstrip("/")
     skill_args = args.get("args")
 
