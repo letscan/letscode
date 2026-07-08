@@ -129,6 +129,63 @@ def _match_path(path: str, patterns: list[str], cwd: str) -> bool:
     return False
 
 
+def _pattern_specificity(pattern: str) -> tuple[int, int, int]:
+    """Compute a specificity tuple ``(anchored, depth, prefix_len)``.
+
+    Used to rank competing allow/deny matches: a more specific pattern wins,
+    and ties break to deny (safety invariant). Specificity is computed from
+    the **original** pattern (user intent), not from the resolved absolute
+    path — otherwise a bare ``plan.md`` would inherit the cwd's depth.
+
+    - ``anchored``: patterns rooted to a location (``/``, ``./``, ``~/``) or a
+      bare filename (semantically relative to cwd, like ``./``) rank above pure
+      wildcards (``**/x`` matches anywhere in the tree). Only ``**/``-prefixed
+      patterns are unanchored.
+    - ``depth``: number of complete literal path segments before the first
+      wildcard char. ``/a/b/*`` → 2; ``/a/*`` → 1; ``/**`` → 0; ``plan.md`` → 1.
+    - ``prefix_len``: character length of the literal prefix (before the first
+      ``*``/``?``); breaks ties at equal depth.
+
+    This generalizes nginx's longest-prefix-match: a specific allow overrides
+    a broader deny (the documented "escape hatch for broad deny rules").
+    """
+    if pattern.startswith("**/"):
+        return (0, 0, 0)
+    p = pattern[2:] if pattern.startswith("./") else pattern
+    # Literal prefix = everything before the first glob char
+    glob_idx = len(p)
+    for ch in ("*", "?"):
+        idx = p.find(ch)
+        if idx != -1:
+            glob_idx = min(glob_idx, idx)
+    literal = p[:glob_idx]
+    segments = [s for s in literal.strip("/").split("/") if s]
+    return (1, len(segments), len(literal))
+
+
+def _most_specific_match(
+    path: str, patterns: list[str], cwd: str,
+) -> str | None:
+    """Return the most specific pattern in ``patterns`` matching ``path``.
+
+    Returns ``None`` when nothing matches. Ties (equal specificity) keep the
+    first-listed pattern — callers compare allow vs deny specificity and apply
+    deny-wins-on-tie at that layer.
+    """
+    if not patterns:
+        return None
+    resolved = str(Path(path).resolve())
+    best: str | None = None
+    best_spec: tuple[int, int, int] = (-1, -1, -1)
+    for pat in patterns:
+        target, is_recursive = _resolve_pattern(pat, cwd)
+        if _glob_match(resolved, target, is_recursive):
+            spec = _pattern_specificity(pat)
+            if spec > best_spec:
+                best, best_spec = pat, spec
+    return best
+
+
 def _has_shell_expansion(command: str) -> bool:
     """Detect dangerous shell metacharacters that bypass simple pattern matching.
 
@@ -223,24 +280,28 @@ def check_read(path: str, rules: Rules) -> str | None:
     """Check if reading a path is allowed.
 
     Returns None if allowed, or an error message if denied.
-    Priority: deny rules > secrets baseline > allow rules > default allow.
+    Priority: secrets baseline > most-specific matching rule (deny wins ties)
+    > default allow.
     """
     cwd = os.getcwd()
     resolved = str(Path(path).resolve())
 
-    # 1. Deny rules always win
-    if _match_path(resolved, rules.deny_read, cwd):
-        return f"<error>Read denied by denyRead rule: {path}</error>"
-
-    # 2. Hardcoded secrets baseline
+    # 1. Hardcoded secrets baseline (highest priority)
     if _is_secret_path(resolved):
         return f"<error>Read denied: sensitive path {path}</error>"
 
-    # 3. Allow rules (escape hatch for broad deny rules)
-    if rules.allow_read and _match_path(resolved, rules.allow_read, cwd):
-        return None
+    # 2. Most-specific matching rule wins; deny wins ties
+    allow_match = _most_specific_match(resolved, rules.allow_read, cwd)
+    deny_match = _most_specific_match(resolved, rules.deny_read, cwd)
+    if allow_match is not None and deny_match is not None:
+        if _pattern_specificity(allow_match) > _pattern_specificity(deny_match):
+            return None  # allow is more specific
+        return f"<error>Read denied by denyRead rule: {deny_match}</error>"
+    if deny_match is not None:
+        return f"<error>Read denied by denyRead rule: {deny_match}</error>"
 
-    # 4. Default: allow
+    # 3. Default: allow (read is default-open; allow_read only acts as escape
+    # hatch against a broad deny_read)
     return None
 
 
@@ -248,26 +309,33 @@ def check_write(path: str, rules: Rules) -> str | None:
     """Check if writing to a path is allowed.
 
     Returns None if allowed, or an error message if denied.
-    Priority: deny rules > secrets baseline > allow rules (default-deny when allow exists).
+    Priority: secrets baseline > most-specific matching rule (deny wins ties).
+    When allow_write is defined, non-matching paths are denied (default-deny
+    under an allow-list); otherwise default-allow.
     """
     cwd = os.getcwd()
     resolved = str(Path(path).resolve())
 
-    # 1. Deny rules always win
-    if _match_path(resolved, rules.deny_write, cwd):
-        return f"<error>Write denied by denyWrite rule: {path}</error>"
-
-    # 2. Hardcoded secrets baseline
+    # 1. Hardcoded secrets baseline (highest priority)
     if _is_secret_path(resolved):
         return f"<error>Write denied: sensitive path {path}</error>"
 
-    # 3. If allow rules are defined, only matching paths are writable
-    if rules.allow_write:
-        if _match_path(resolved, rules.allow_write, cwd):
-            return None
-        return f"<error>Write denied (not in allowWrite): {path}</error>"
+    # 2. Most-specific matching rule wins; deny wins ties
+    allow_match = _most_specific_match(resolved, rules.allow_write, cwd)
+    deny_match = _most_specific_match(resolved, rules.deny_write, cwd)
+    if allow_match is not None and deny_match is not None:
+        if _pattern_specificity(allow_match) > _pattern_specificity(deny_match):
+            return None  # allow is more specific (escape hatch for broad deny)
+        return f"<error>Write denied by denyWrite rule: {deny_match}</error>"
+    if deny_match is not None:
+        return f"<error>Write denied by denyWrite rule: {deny_match}</error>"
+    if allow_match is not None:
+        return None
 
-    # 4. No allow rules → allow all
+    # 3. No rule matches. If an allow_write list exists, this path isn't in it
+    # → deny (allow-list semantics). Otherwise default-allow.
+    if rules.allow_write:
+        return f"<error>Write denied (not in allowWrite): {path}</error>"
     return None
 
 
