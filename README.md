@@ -1,54 +1,129 @@
-# letscode
+# LetsCode
 
-A lightweight, CLI-first AI coding agent. A single Python script that loops over any OpenAI-compatible LLM, calling tools until the task is done.
+A lightweight, CLI-first AI coding agent harness. Rules-driven, fully customizable, and built for the terminal — loops over any OpenAI-compatible LLM, calling tools until the task is done.
 
 ```
 $ letscode "add a /health endpoint to app.py"
 ```
 
-**Why letscode?**
+## Why LetsCode?
 
-- **Lightweight** — ~2K lines of Python, four dependencies (`openai`, `mcp`, `agent-client-protocol`, `pyyaml`). No vector databases, no framework lock-in.
-- **CLI-first** — Runs in your terminal. Pipe prompts in, read structured JSONL out. Fits into any workflow.
-- **ACP-ready** — Ships `letscode-acp`, an [Agent Client Protocol](https://github.com/AI-Utils/agent-client-protocol) server for IDE and client integration (VS Code extensions, etc.).
+### True automation, trusted execution
+
+No more step-by-step approvals. Three presets cover most cases out of the box: `safe` (read-only, CI/CD auto-review), `default` (workspace writable, dev work), `risk` (full access, migrations). Set the rules, and the agent runs unattended — overnight refactors, bulk lint fixes, PR auto-review — without you watching, without going off the rails. Need finer control? Custom rules tighten or open up any preset.
+
+```bash
+# safe — read-only, CI/CD auto-review
+letscode --preset safe "review PR #142"
+
+# default — workspace writable, overnight refactor
+letscode --preset default "refactor auth/ to async"
+
+# risk — full access, full migration
+letscode --preset risk "migrate db schema to v2"
+
+# advanced — open up writes on top of safe
+# config.json:
+#   { "preset": "safe", "rules": { "allowWrite": ["./reports/**"] } }
+letscode --preset safe "generate test coverage report"
+```
+
+### AgentCard: tailor and run
+
+Define ready-to-use agents — tools, MCP servers, skills, permissions — in one Markdown file, then run them with `--as`. No code, no framework — just a card and a flag. Ships four built-in cards (Explore / Plan / Review / SetupZed).
+
+```bash
+# Use a built-in card
+letscode --as Review "review tools/runner.py"
+
+# List available cards
+letscode --list-agents
+
+# Your own card (agents/Refactorer.md) — tools, MCP, skills, permissions in one file:
+#   ---
+#   name: Refactorer
+#   tools: [Read, Edit, Grep, Glob]
+#   mcp_servers: [playwright]
+#   skills: [refactor]
+#   preset: default
+#   ---
+letscode --as Refactorer "extract a UserService from app.py"
+```
+
+### Plug into your favorite editor
+
+Need an interactive session? LetsCode speaks the [Agent Client Protocol](https://agentclientprotocol.com) — the open standard [adopted by Zed](https://zed.dev/blog/acp-registry) and a growing ecosystem of editors. One server, any compatible client, zero lock-in.
+
+```bash
+# Zed — built-in agent writes .zed/settings.json for you
+letscode --as SetupZed
+
+# JetBrains
+letscode --as SetupJetbrains
+```
+
+### Composable multi-agent workflows
+
+AgentTeam, dynamic workflows, and beyond. Define roles with AgentCards, compose them at the shell — build any agent workflow you can imagine, Unix-style.
+
+```bash
+# Chain agents at the shell: Explore → Plan → Review
+letscode --as Explore --event-stream "find all async funcs" \
+  | letscode --as Plan --event-stream "draft refactoring plan" \
+  | letscode --as Review "review the plan"
+
+# Or let the main agent delegate sub-agents itself
+letscode "refactor src/ for async — delegate as needed"
+```
 
 ## Features
 
-- **ReAct agent loop** — LLM calls tools, sees results, decides when to stop
-- **8 built-in tools** — Bash, Read, Write, Edit, Glob, Grep, Skill, Agent (sub-agent delegation)
-- **AgentCards** — Define specialized agents (reviewer, planner, explorer) as Markdown + YAML; ships built-in Explore/Plan/Review/SetupZed
-- **MCP integration** — Connect stdio and HTTP/SSE MCP servers for extra tools
-- **3-layer security** — Rule engine (path/command allowlist) + macOS Seatbelt sandbox + tool-level permission checks
-- **Event stream output** — JSONL structured logs, ACP-compatible
-- **Multi-turn sessions** — Resume from previous session logs with `--feed`
-- **Slash commands** — `/new` reset context, `/compact` compress context, `/undo` rollback last turn
-- **Prompt caching** — Per-model `cache` config (`auto`/`explicit`/`none`) with `cache_control` marker injection for providers that need it (Qwen/DashScope); per-turn cache hit rate shown in the stat footer
+### CLI
+
+- **Any LLM** — Any OpenAI-compatible API: GLM / DeepSeek / Qwen / GPT / local models.
+- **Vision proxy** — Text-only models handle images too — set a `vision_model` and images are auto-routed and described in text.
+- **OS-level sandbox** — macOS Seatbelt profiles, three presets: `safe` (read-only) / `default` (workspace) / `risk` (full).
+- **MCP** — Connect stdio / HTTP / SSE MCP servers; tools are auto-discovered and merged in.
+- **Skills** — Write your team's commit / review workflow as a `SKILL.md` and invoke it with a single command.
+- **Sub-Agents** — Delegate searches and sub-tasks to a spawned agent so the main context stays clean.
+- **Workspace-aware** — `--workspace` switches the working directory; logs, sandbox boundaries, and environment context (cwd / git / shell / platform) bind to it automatically.
+- **Project rules** — Follows the [AGENTS.md](https://agents.md) convention — coding standards and workflow rules take effect automatically.
+- **JSON event stream** — `--event-stream` emits structured JSONL output; pipe-friendly.
+- **Usage stat** — Per-turn token footer (with cache hit rate).
+
+### ACP
+
+- **IDE-integrated** — `letscode-acp` ships a built-in ACP server over stdio; any compatible editor plugs right in.
+- **Session management** — Sessions persist across restarts: list / load / resume.
+- **Context management** — `/compact` (LLM-summarized context compression) · `/new` (reset) · `/undo` (rollback last turn).
 
 ## Install
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
+**One-liner** (installs [uv](https://docs.astral.sh/uv/) if missing, then LetsCode as a global tool):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh
+```
+
+Or manually:
 
 ```bash
 git clone https://github.com/letscan/letscode.git
 cd letscode
-uv sync
+uv sync                # for development
+# — or —
+uv tool install git+https://github.com/letscan/letscode.git   # as a global tool
 ```
 
-Or install as a tool:
+Requires Python 3.11+.
 
-```bash
-uv tool install .
-```
+## Configuration
 
-## Quick Start
-
-### 1. Create config
+Create config from the template and fill in your API key:
 
 ```bash
 cp config.example.json config.json
 ```
-
-Edit `config.json` with your API key:
 
 ```json
 {
@@ -67,7 +142,18 @@ Edit `config.json` with your API key:
 
 `base_url` and `api_key` belong to the provider; multiple models under the same provider share them.
 
-Add `"vision": true` to vision-capable models. For a text-only main model, set a top-level `"vision_model"` — image prompts are then routed through it for descriptions, letting any model handle images:
+**Works with any OpenAI-compatible API** — GPT, Gemini, GLM, DeepSeek, Qwen, local models, etc.
+
+Environment variables override the config file:
+
+```bash
+export OPENAI_API_KEY="YOUR_API_KEY"
+export OPENAI_BASE_URL="https://open.bigmodel.cn/api/coding/paas/v4"
+```
+
+### Vision
+
+Add `"vision": true` to vision-capable models. For a text-only main model, set a top-level `"vision_model"` — image prompts are routed through it for text descriptions, letting any model handle images:
 
 ```json
 {
@@ -86,16 +172,9 @@ Add `"vision": true` to vision-capable models. For a text-only main model, set a
 }
 ```
 
-Environment variables override the config file:
+### Prompt caching
 
-```bash
-export OPENAI_API_KEY="YOUR_API_KEY"
-export OPENAI_BASE_URL="https://open.bigmodel.cn/api/coding/paas/v4"
-```
-
-Works with any OpenAI-compatible API (GPT, Gemini, GLM, DeepSeek, Qwen, local models, etc.).
-
-**Prompt caching:** most providers cache the shared prompt prefix automatically — set `"cache": "auto"` (the default, correct for DeepSeek and GLM ≥4.6). Qwen/DashScope needs explicit `cache_control` markers, so set `"cache": "explicit"` on the provider:
+Most providers cache the shared prompt prefix automatically — set `"cache": "auto"` (the default, correct for DeepSeek and GLM ≥4.6). Qwen/DashScope needs explicit `cache_control` markers — set `"cache": "explicit"` on the provider:
 
 ```json
 {
@@ -111,24 +190,6 @@ Works with any OpenAI-compatible API (GPT, Gemini, GLM, DeepSeek, Qwen, local mo
 ```
 
 The cache hit rate then shows inline in the per-turn stat footer (`2.7k tokens (99%cached)`).
-
-### 2. Run
-
-```bash
-# Via uv
-uv run letscode "create a Python web server"
-
-# After install
-letscode "your task"
-```
-
-### 3. ACP Server
-
-```bash
-letscode-acp [-c config.json]
-```
-
-Communicates over stdio with any ACP client.
 
 ## Usage
 
@@ -154,23 +215,7 @@ letscode [options] "prompt"
 | `--feed` | Resume from a previous session log |
 | `--append` | Append new events to the same log file |
 
-### Examples
-
-```bash
-# List models
-letscode --models
-
-# Use a specific model with verbose output
-letscode -m glm-4.6 -v "refactor src/"
-
-# Structured input (ACP-compatible)
-letscode --prompt-format json '[{"type":"text","text":"hello"}]'
-
-# Resume a session
-letscode --feed .letscode/logs/session.jsonl --append "continue the task"
-```
-
-## Security
+### Security presets
 
 | Preset | Read | Write | Commands |
 |--------|------|-------|----------|
@@ -194,36 +239,6 @@ Custom rules in `config.json` (keys are camelCase):
 ```
 
 Rules use **most-specific-wins**: a more specific allow (e.g. `plan.md`) overrides a broader deny (e.g. `/**`), ties break to deny. This lets AgentCards pair `preset: safe` with a narrow `allowWrite` to carve out write access for specific files.
-
-## AgentCards
-
-An AgentCard defines a specialized agent: its system prompt, tool whitelist, and permission boundary. Create one as `agents/<Name>.md`:
-
-```markdown
----
-name: Reviewer
-description: Read-only code review specialist
-tools: [Read, Grep, Glob]
-preset: safe
-rules:
-  denyWrite: ["/**"]
----
-You are a code review specialist. Cite file:line for every comment.
-
-{{ env }}
-```
-
-Run with `--as`:
-
-```bash
-letscode --as Reviewer "review tools/runner.py"
-```
-
-**Built-in cards** ship with letscode: `Explore` (read-only codebase search), `Plan` (investigate + write a plan file), `Review` (read-only code review), `SetupZed` (configure Zed editor integration). List them with `letscode --list-agents`. A project `agents/<Name>.md` overrides a built-in of the same name.
-
-Card bodies support three template variables: `{{ env }}`, `{{ skills }}`, and `{{ default_system_prompt }}` (the full built-in prompt — useful when you want to keep most defaults and prepend a few lines).
-
-**Priority**: CLI flags > AgentCard > `config.json`, per-field. For example `--preset risk` overrides the card's `preset: safe`.
 
 ## Architecture
 

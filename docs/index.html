@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LetsCode — 规则驱动的 AI 编程 Agent（浅色极简版）</title>
+<style>
+  :root{
+    --bg:#fff; --bg-soft:#fafafa; --bg-code:#f6f8fa; --line:#e4e7eb; --line-strong:#d0d7de;
+    --text:#1f2328; --text-dim:#59636e; --text-faint:#818b98;
+    --accent:#0969da; --green:#1a7f37; --red:#cf222e; --yellow:#9a6700;
+    --mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+    --shadow:0 1px 3px rgba(0,0,0,0.06),0 8px 24px rgba(0,0,0,0.04);
+    --shadow-lg:0 4px 12px rgba(0,0,0,0.08),0 24px 48px rgba(0,0,0,0.06);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:100;background:rgba(255,255,255,0.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  .nav-in{max-width:1080px;margin:0 auto;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px}
+  .logo{font-weight:700;font-size:17px;letter-spacing:-0.02em}
+  .nav-links{display:flex;gap:22px;align-items:center;font-size:14px}
+  .nav-links a{color:var(--text-dim)}
+  .nav-links a:hover{color:var(--text);text-decoration:none}
+
+  /* buttons */
+  .btn{display:inline-block;padding:9px 18px;border-radius:6px;font-size:14px;font-weight:500;border:1px solid transparent;cursor:pointer;transition:all .15s;text-decoration:none!important}
+  .btn-primary{background:var(--text);color:#fff!important}
+  .btn-primary:hover{background:#000}
+  .btn-ghost{border-color:var(--line-strong);color:var(--text)!important}
+  .btn-ghost:hover{border-color:var(--text-dim);background:var(--bg-soft)}
+
+  /* hero */
+  .hero{padding:72px 0 56px;text-align:center;border-bottom:1px solid var(--line)}
+  .badge-pill{display:inline-block;background:var(--bg-soft);border:1px solid var(--line);color:var(--text-dim);font-family:var(--mono);font-size:12px;padding:4px 12px;border-radius:99px;margin-bottom:24px}
+  h1{font-size:clamp(36px,5.5vw,60px);font-weight:800;line-height:1.05;letter-spacing:-0.03em;margin-bottom:24px}
+  h1 .hl{color:var(--accent)}
+  .lead{font-size:20px;color:var(--text-dim);max-width:580px;margin:0 auto 36px}
+  .hero-cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:40px}
+
+  /* hero terminal — dark theme even on light page */
+  .term{--t-bg:#0d1117;--t-bar:#161b22;--t-border:#30363d;--t-text:#e6edf3;--t-dim:#8b949e;--t-faint:#6e7681;--t-green:#7ee787;--t-cyan:#79c0ff;--t-blue:#a5d6ff;max-width:680px;margin:0 auto;background:var(--t-bg);border:1px solid var(--t-border);border-radius:10px;overflow:hidden;box-shadow:var(--shadow-lg);text-align:left}
+  .term-bar{background:var(--t-bar);padding:9px 14px;border-bottom:1px solid var(--t-border);display:flex;gap:6px;align-items:center}
+  .term-bar i{width:12px;height:12px;border-radius:50%;display:inline-block}
+  .term-bar .r{background:#ff5f56}.term-bar .y{background:#ffbd2e}.term-bar .g{background:#27c93f}
+  .term-bar .t-title{margin-left:10px;font-size:12px;color:var(--t-faint);font-family:var(--mono)}
+  .term-body{padding:18px;font-family:var(--mono);font-size:13px;line-height:1.6;overflow-x:auto;white-space:pre;color:var(--t-text)}
+  .term-body .p{color:var(--t-green)}.term-body .o{color:var(--t-dim)}.term-body .f{color:var(--t-faint)}
+  .term-body .ok{color:var(--t-green)}.term-body .c{color:var(--t-faint)}
+
+  /* sections */
+  section{padding:72px 0;border-bottom:1px solid var(--line)}
+  .sec-head{text-align:center;margin-bottom:48px}
+  .sec-label{font-family:var(--mono);font-size:13px;color:var(--accent);margin-bottom:8px}
+  h2{font-size:clamp(28px,3.5vw,38px);font-weight:700;letter-spacing:-0.02em;margin-bottom:12px}
+  .sec-sub{color:var(--text-dim);font-size:17px;max-width:560px;margin:0 auto}
+
+  /* install bar — compact oneliner + copy button */
+  .install-bar{max-width:560px;margin:0 auto 20px;text-align:left}
+  .install-tabs{display:flex;gap:0;border:1px solid #d0d7de;border-bottom:none;border-radius:8px 8px 0 0;overflow:hidden}
+  .install-tab{background:#f6f8fa;border:none;border-right:1px solid #d0d7de;padding:8px 18px;font-family:var(--mono);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-faint);cursor:pointer;transition:all .15s}
+  .install-tab:last-child{border-right:none}
+  .install-tab:hover{color:var(--text-dim)}
+  .install-tab.is-active{color:var(--accent);background:#fff}
+  .install-cmd-row{display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid #30363d;border-radius:0 0 8px 8px;padding:14px 16px;box-shadow:var(--shadow)}
+  .install-cmd{flex:1;font-family:var(--mono);font-size:13px;color:#e6edf3;white-space:nowrap;overflow-x:auto}
+  .install-cmd[hidden]{display:none}
+  .install-copy{flex-shrink:0;background:transparent;border:none;color:#6e7681;cursor:pointer;padding:4px;border-radius:4px;transition:all .15s;display:flex;align-items:center}
+  .install-copy:hover{color:#e6edf3;background:rgba(255,255,255,0.06)}
+
+  .hero-links{font-size:13px;color:var(--text-faint);display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+  .hero-links a{color:var(--text-dim)}
+  .dot-sep{color:var(--line-strong)}
+
+  /* selling points */
+  .sp{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;margin-bottom:80px}
+  .sp:last-child{margin-bottom:0}
+  .sp.reverse .sp-text{order:2}
+  .sp-num{font-family:var(--mono);font-size:13px;color:var(--accent);font-weight:600;margin-bottom:14px;letter-spacing:0.05em}
+  .sp h3{font-size:26px;font-weight:700;margin-bottom:16px;letter-spacing:-0.01em;line-height:1.25}
+  .sp-text p{color:var(--text-dim);font-size:16px;margin-bottom:18px}
+  .sp-text ul{list-style:none}
+  .sp-text li{color:var(--text-dim);padding-left:24px;position:relative;margin-bottom:8px;font-size:15px}
+  .sp-text li::before{content:'';position:absolute;left:0;top:10px;width:14px;height:1.5px;background:var(--accent)}
+  .sp-text li b{color:var(--text);font-weight:600}
+
+  .code-card{background:#0d1117;border:1px solid #30363d;border-radius:10px;overflow:hidden;box-shadow:var(--shadow-lg)}
+  .code-head{padding:9px 14px;border-bottom:1px solid #30363d;font-family:var(--mono);font-size:12px;color:#6e7681;background:#161b22;display:flex;justify-content:space-between}
+  .code-card pre{padding:18px;font-family:var(--mono);font-size:13px;line-height:1.65;white-space:pre;overflow-x:auto;color:#e6edf3}
+  .ck{color:#79c0ff}.cs{color:#a5d6ff}.cc{color:#6e7681;font-style:italic}.cf{color:#8b949e}.cp{color:#6e7681}
+
+  /* features */
+  .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:760px){.feat-grid{grid-template-columns:1fr}.sp{grid-template-columns:1fr;gap:32px}.sp.reverse .sp-text{order:0}}
+  .feat{padding:24px;border:1px solid var(--line);border-radius:10px;background:var(--bg-soft);transition:all .15s}
+  .feat:hover{border-color:var(--line-strong);box-shadow:var(--shadow);transform:translateY(-1px)}
+  .feat .ic{font-size:22px;margin-bottom:10px}
+  .feat h4{font-size:15px;font-weight:600;margin-bottom:4px}
+  .feat p{font-size:13px;color:var(--text-dim)}
+  .feat-group-label{font-family:var(--mono);font-size:12px;color:var(--accent);margin-bottom:16px;letter-spacing:0.05em}
+
+  footer{padding:40px 0;text-align:center;font-size:13px;color:var(--text-faint)}
+  footer a{color:var(--text-dim);margin:0 8px}
+
+  /* i18n: default zh, html[data-lang="en"] shows [data-en] */
+  [data-en]{display:none}
+  html[data-lang="en"] [data-zh]{display:none}
+  html[data-lang="en"] [data-en]{display:inline}
+
+  .lang-toggle{background:transparent;border:1px solid var(--line-strong);color:var(--text-dim);padding:3px 10px;border-radius:5px;font-family:var(--mono);font-size:12px;cursor:pointer;transition:all .15s;margin-left:8px}
+  .lang-toggle:hover{color:var(--text);border-color:var(--text-dim)}
+</style>
+</head>
+<body>
+<nav><div class="nav-in">
+  <div class="logo">LetsCode</div>
+  <div class="nav-links">
+    <a href="#why"><span data-zh>亮点</span><span data-en>Why</span></a>
+    <a href="#features"><span data-zh>功能</span><span data-en>Features</span></a>
+    <a href="#features">Features</a>
+    <a href="https://github.com/letscan/letscode">GitHub</a>
+    <button class="lang-toggle" onclick="toggleLang()">中 / EN</button>
+  </div>
+</div></nav>
+
+<!-- HERO -->
+<div class="wrap">
+<section class="hero">
+  <div class="badge-pill">
+    <span data-zh>规则驱动 · 自由定制 · CLI 原生的 Agent Harness</span>
+    <span data-en>Rules-driven · Fully customizable · CLI-native agent harness</span>
+  </div>
+  <h1>
+    <span data-zh>你定下目标和边界，<br>其余<span class="hl">放心交给 LetsCode</span>。</span>
+    <span data-en>You set the goal and bounds —<br><span class="hl">trust LetsCode with the rest</span>.</span>
+  </h1>
+  <p class="lead">
+    <span data-zh>告别逐条审批的弹窗，却始终在你掌控之中。一个真正能独立干活的 Agent Harness。</span>
+    <span data-en>No more approving every step, yet always within your grasp. An agent harness that truly runs on its own.</span>
+  </p>
+  <div class="install-bar">
+    <div class="install-tabs">
+      <button class="install-tab is-active" data-install="curl" onclick="switchInstall(this)">curl</button>
+      <button class="install-tab" data-install="uv" onclick="switchInstall(this)">uv</button>
+    </div>
+    <div class="install-cmd-row">
+      <code class="install-cmd" data-install-cmd="curl">curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</code>
+      <code class="install-cmd" data-install-cmd="uv" hidden>uv tool install git+https://github.com/letscan/letscode.git</code>
+      <button class="install-copy" onclick="copyInstall(this)" title="Copy">
+        <svg class="copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <svg class="check-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="20 6 9 17 4 12"></polyline></svg>
+      </button>
+    </div>
+  </div>
+  <div class="hero-links">
+    <a href="https://github.com/letscan/letscode">
+      <span data-zh>查看源码</span>
+      <span data-en>View Source</span>
+    </a>
+    <span class="dot-sep">·</span>
+    <span data-zh>需要 Python 3.11+（自动装 uv）</span>
+    <span data-en>Requires Python 3.11+ (uv auto-installed)</span>
+  </div>
+</section>
+</div>
+
+<!-- QUICK START -->
+<!-- WHY LETSCODE -->
+<div class="wrap">
+<section id="why">
+  <div class="sec-head"><div class="sec-label">// why</div><h2><span data-zh>为什么选 LetsCode</span><span data-en>Why LetsCode</span></h2></div>
+
+  <!-- 01 TRUE AUTOMATION -->
+  <div class="sp">
+    <div class="sp-text">
+      <div class="sp-num">
+        <span data-zh>01 · 真正的自动化，放心执行</span>
+        <span data-en>01 · TRUE AUTOMATION, TRUSTED EXECUTION</span>
+      </div>
+      <h3>
+        <span data-zh>告别逐条审批</span>
+        <span data-en>No more step-by-step approvals</span>
+      </h3>
+      <p>
+        <span data-zh>三档预设覆盖大多数场景——<code>safe</code> 只读审查、<code>default</code> 工作区开发、<code>risk</code> 完全权限。规则定好，Agent 自主跑完全程：CI 自动审查、夜间重构、批量修 lint——你不在场，它也不会闯祸。不够用？自定义规则在任意预设上精确放开或收紧。</span>
+        <span data-en>Three presets cover most cases: <code>safe</code> (read-only, CI/CD review), <code>default</code> (workspace writable, dev work), <code>risk</code> (full access, migrations). Set the rules, and the agent runs unattended — overnight refactors, bulk lint fixes, PR auto-review — without you watching, without going off the rails. Need finer control? Custom rules tighten or open up any preset.</span>
+      </p>
+      <ul>
+        <li><span data-zh><b>safe</b> · 只读，CI/CD 自动审查</span><span data-en><b>safe</b> · read-only, CI/CD auto-review</span></li>
+        <li><span data-zh><b>default</b> · 工作区可写，日常开发</span><span data-en><b>default</b> · workspace writable, dev work</span></li>
+        <li><span data-zh><b>risk</b> · 完全权限，全量迁移</span><span data-en><b>risk</b> · full access, migrations</span></li>
+        <li><span data-zh><b>高级</b> · 在 safe 基础上精确放开写入</span><span data-en><b>advanced</b> · open up writes on top of safe</span></li>
+      </ul>
+    </div>
+    <div class="code-card">
+      <div class="code-head"><span>shell</span><span>presets</span></div>
+<pre><span class="cc"># safe — 只读，CI/CD 自动审查</span>
+<span class="cp">$</span> letscode --preset safe <span class="cs">"review PR #142"</span>
+
+<span class="cc"># default — 工作区可写，夜间重构</span>
+<span class="cp">$</span> letscode --preset default <span class="cs">"refactor auth/ to async"</span>
+
+<span class="cc"># risk — 完全权限，全量迁移</span>
+<span class="cp">$</span> letscode --preset risk <span class="cs">"migrate db schema to v2"</span>
+
+<span class="cc"># 高级 — safe 基础上放开 reports/ 写入</span>
+<span class="cc"># config.json: { "preset":"safe",</span>
+<span class="cc">#   "rules": { "allowWrite": ["./reports/**"] } }</span>
+<span class="cp">$</span> letscode --preset safe <span class="cs">"generate coverage report"</span></pre>
+    </div>
+  </div>
+
+  <!-- 02 AGENTCARD -->
+  <div class="sp reverse">
+    <div class="sp-text">
+      <div class="sp-num">
+        <span data-zh>02 · AGENTCARD · 按需定制，即定即跑</span>
+        <span data-en>02 · AGENTCARD · TAILOR AND RUN</span>
+      </div>
+      <h3>
+        <span data-zh>定义完备、随手可用的 Agent</span>
+        <span data-en>Define ready-to-use agents</span>
+      </h3>
+      <p>
+        <span data-zh>一个 Markdown 文件，声明一个完整 Agent——它能用什么工具、连哪些 MCP、带哪些技能、有什么权限。<code>--as</code> 一行调用，不用写代码，不用学框架。内置 Explore / Plan / Review / SetupZed 四张卡。</span>
+        <span data-en>One Markdown file declares a complete agent — its tools, MCP servers, skills, and permissions. Run it with <code>--as</code>. No code, no framework — just a card and a flag. Ships four built-in cards (Explore / Plan / Review / SetupZed).</span>
+      </p>
+      <ul>
+        <li><span data-zh><b>内置卡</b> · <code>--as Review</code> 直接跑</span><span data-en><b>Built-in</b> · <code>--as Review</code> ready to go</span></li>
+        <li><span data-zh><b>自定义</b> · agents/MyAgent.md，一个文件搞定</span><span data-en><b>Custom</b> · agents/MyAgent.md, one file done</span></li>
+        <li><span data-zh><b>定义</b> · tools + MCP + skills + preset + rules</span><span data-en><b>Define</b> · tools + MCP + skills + preset + rules</span></li>
+        <li><span data-zh><b>覆盖</b> · 项目级同名卡覆盖内置卡</span><span data-en><b>Override</b> · project cards override built-ins</span></li>
+      </ul>
+    </div>
+    <div class="code-card">
+      <div class="code-head"><span>shell</span><span>--as</span></div>
+<pre><span class="cc"># 用内置卡</span>
+<span class="cp">$</span> letscode --as Review <span class="cs">"review tools/runner.py"</span>
+
+<span class="cc"># 列出所有可用卡</span>
+<span class="cp">$</span> letscode --list-agents
+
+<span class="cc"># 你的自定义卡 (agents/Refactorer.md)</span>
+<span class="cc"># ---</span>
+<span class="cc"># name: Refactorer</span>
+<span class="cc"># tools: [Read, Edit, Grep, Glob]</span>
+<span class="cc"># mcp_servers: [playwright]</span>
+<span class="cc"># skills: [refactor]</span>
+<span class="cc"># preset: default</span>
+<span class="cc"># ---</span>
+<span class="cp">$</span> letscode --as Refactorer <span class="cs">"extract UserService from app.py"</span></pre>
+    </div>
+  </div>
+
+  <!-- 03 PLUG INTO ANY IDE -->
+  <div class="sp">
+    <div class="sp-text">
+      <div class="sp-num">
+        <span data-zh>03 · 接入你最爱的编辑器</span>
+        <span data-en>03 · PLUG INTO YOUR FAVORITE EDITOR</span>
+      </div>
+      <h3>
+        <span data-zh>需要交互模式？接进你最爱的编辑器</span>
+        <span data-en>Need an interactive session? Plug into your favorite editor</span>
+      </h3>
+      <p>
+        <span data-zh>LetsCode 说 <a href="https://agentclientprotocol.com">ACP 协议</a>——<a href="https://zed.dev/blog/acp-registry">Zed 已采用</a>的开放标准，编辑器生态持续增长。一个服务端，任意兼容客户端，零锁定。</span>
+        <span data-en>LetsCode speaks the <a href="https://agentclientprotocol.com">Agent Client Protocol</a> — the open standard <a href="https://zed.dev/blog/acp-registry">adopted by Zed</a> and a growing ecosystem of editors. One server, any compatible client, zero lock-in.</span>
+      </p>
+      <ul>
+        <li><span data-zh><b>SetupZed</b> · 内置 agent 自动写配置</span><span data-en><b>SetupZed</b> · built-in agent writes config for you</span></li>
+        <li><span data-zh><b>SetupJetbrains</b> · JetBrains 全家桶</span><span data-en><b>SetupJetbrains</b> · JetBrains IDEs</span></li>
+        <li><span data-zh><b>ACP 标准</b> · 任何兼容客户端即插即用</span><span data-en><b>ACP standard</b> · any compatible client plugs right in</span></li>
+        <li><span data-zh><b>零锁定</b> · 不绑定任何编辑器</span><span data-en><b>Zero lock-in</b> · no editor lock-in</span></li>
+      </ul>
+    </div>
+    <div class="code-card">
+      <div class="code-head"><span>shell</span><span>--as Setup*</span></div>
+<pre><span class="cc"># Zed — 内置 agent 自动写 .zed/settings.json</span>
+<span class="cp">$</span> letscode --as SetupZed
+
+<span class="cc"># JetBrains</span>
+<span class="cp">$</span> letscode --as SetupJetbrains</pre>
+    </div>
+  </div>
+
+  <!-- 04 COMPOSABLE MULTI-AGENT -->
+  <div class="sp reverse">
+    <div class="sp-text">
+      <div class="sp-num">
+        <span data-zh>04 · 天然的多 Agent 编排</span>
+        <span data-en>04 · COMPOSABLE MULTI-AGENT</span>
+      </div>
+      <h3>
+        <span data-zh>无论是 AgentTeam 还是动态 Workflow</span>
+        <span data-en>AgentTeam, dynamic workflows, and beyond</span>
+      </h3>
+      <p>
+        <span data-zh>AgentCard 定义角色，CLI 原生组合——像搭 Unix 工具一样，构造你能想到的任何 Agent 工作流。</span>
+        <span data-en>Define roles with AgentCards, compose them at the shell — build any agent workflow you can imagine, Unix-style.</span>
+      </p>
+      <ul>
+        <li><span data-zh><b>AgentCard 即角色</b> · 一个 Markdown 定义一个专家 Agent</span><span data-en><b>Cards as roles</b> · one Markdown file per specialist agent</span></li>
+        <li><span data-zh><b>Agent 工具内置委托</b> · 主 Agent 自主 spawn 子 Agent 并行干活</span><span data-en><b>Built-in delegation</b> · the main agent spawns sub-agents in parallel</span></li>
+        <li><span data-zh><b>管道串联</b> · <code>--event-stream</code> JSONL 输出，shell 管道自由组合</span><span data-en><b>Pipe-friendly</b> · <code>--event-stream</code> JSONL output, chain at the shell</span></li>
+        <li><span data-zh><b>无需新框架</b> · 不学 SDK，不配控制面，几行 shell 就是工作流</span><span data-en><b>No new framework</b> · no SDK, no control plane — just shell</span></li>
+      </ul>
+    </div>
+    <div class="code-card">
+      <div class="code-head"><span>shell</span><span>multi-agent workflow</span></div>
+<pre><span class="cc"># Explore 搜代码 → Plan 出方案 → Review 审查</span>
+<span class="cp">$</span> letscode --as Explore "find all async funcs" \
+    --event-stream | letscode --as Plan "draft refactoring plan" \
+    --event-stream | letscode --as Review "review the plan"
+
+<span class="cc"># 或者让主 Agent 自主委托子 Agent</span>
+<span class="cp">$</span> letscode "refactor src/ for async — delegate as needed"
+<span class="cs">▸ Agent: Explore (searching async patterns…)</span>
+<span class="cs">▸ Agent: Plan (drafting step-by-step…)</span>
+<span class="cs">✓ plan written to REFACTOR.md</span></pre>
+    </div>
+  </div>
+</section>
+</div>
+
+<!-- FEATURES -->
+<div class="wrap">
+<section id="features">
+  <div class="sec-head"><div class="sec-label">// features</div><h2>完整能力</h2></div>
+
+  <div class="feat-group-label">▸ CLI</div>
+  <div class="feat-grid">
+    <div class="feat"><div class="ic">🔌</div><h4>任意模型</h4><p>GLM / DeepSeek / Qwen / GPT / 本地模型，OpenAI 兼容即插即用。</p></div>
+    <div class="feat"><div class="ic">🖼️</div><h4>Vision 代理</h4><p>纯文本模型也能处理图片——设个 vision_model，自动路由转文字。</p></div>
+    <div class="feat"><div class="ic">🛡️</div><h4>OS-level sandbox</h4><p>macOS Seatbelt 沙箱，三档预设：safe 只读 / default 工作区 / risk 全开。</p></div>
+    <div class="feat"><div class="ic">🧩</div><h4>MCP</h4><p>stdio / HTTP / SSE MCP 服务器，工具自动发现接入。</p></div>
+    <div class="feat"><div class="ic">⚡</div><h4>Skills</h4><p>把团队的 commit / review 流程写成 SKILL.md，一句话调用。</p></div>
+    <div class="feat"><div class="ic">🌿</div><h4>Sub-Agents</h4><p>派子代理去搜代码，主上下文不被噪声淹没。</p></div>
+    <div class="feat"><div class="ic">📂</div><h4>Workspace-aware</h4><p>--workspace 切换工作目录，日志、沙箱边界、环境上下文自动绑定。</p></div>
+    <div class="feat"><div class="ic">📋</div><h4>Project rules</h4><p>遵循 AGENTS.md 标准，代码规约与工作流自动生效。</p></div>
+    <div class="feat"><div class="ic">📡</div><h4>JSON event stream</h4><p>--event-stream 结构化 JSONL 输出，管道友好。</p></div>
+    <div class="feat"><div class="ic">📊</div><h4>Usage stat</h4><p>每轮 token 统计脚注，含缓存命中率。</p></div>
+  </div>
+
+  <div style="height:32px"></div>
+  <div class="feat-group-label">▸ ACP</div>
+  <div class="feat-grid">
+    <div class="feat"><div class="ic">🖥️</div><h4>IDE-integrated</h4><p>letscode-acp 内置 ACP 服务端，stdio 通信，任何兼容编辑器即插即用。</p></div>
+    <div class="feat"><div class="ic">💾</div><h4>Session management</h4><p>会话持久化，跨重启 list / load / resume。</p></div>
+    <div class="feat"><div class="ic">🔄</div><h4>Context management</h4><p>/compact LLM 压缩上下文 · /new 重置 · /undo 回滚上一轮。</p></div>
+  </div>
+</section>
+</div>
+
+<footer>
+  <div>LetsCode · MIT 协议 · 由 letscan 维护</div>
+  <div style="margin-top:8px"><a href="https://github.com/letscan/letscode">GitHub</a><a href="https://github.com/letscan/letscode/issues">Issues</a></div>
+</footer>
+<script>
+function toggleLang(){
+  var h=document.documentElement;
+  var n=h.getAttribute('data-lang')==='zh'?'en':'zh';
+  h.setAttribute('data-lang',n);
+  try{localStorage.setItem('letscode-lang',n)}catch(e){}
+  document.title=n==='zh'?'LetsCode — 规则驱动的 Agent Harness':'LetsCode — a rules-driven agent harness';
+}
+(function(){
+  var s='zh';
+  try{s=localStorage.getItem('letscode-lang')||'zh'}catch(e){}
+  document.documentElement.setAttribute('data-lang',s);
+})();
+function copyInstall(btn){
+  var active=document.querySelector('.install-cmd:not([hidden])');
+  if(!active)return;
+  var text=active.textContent.trim();
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(text).then(function(){flashCopy(btn)});
+  }else{
+    var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');flashCopy(btn)}catch(e){}document.body.removeChild(ta);
+  }
+}
+function flashCopy(btn){
+  var cp=btn.querySelector('.copy-icon'),ck=btn.querySelector('.check-icon');
+  cp.style.display='none';ck.style.display='inline';
+  setTimeout(function(){cp.style.display='inline';ck.style.display='none'},1500);
+}
+function switchInstall(tab){
+  var box=tab.closest('.install-bar');
+  box.querySelectorAll('.install-tab').forEach(function(t){t.classList.toggle('is-active',t===tab)});
+  var key=tab.getAttribute('data-install');
+  box.querySelectorAll('.install-cmd').forEach(function(c){c.hidden=c.getAttribute('data-install-cmd')!==key});
+}
+</script>
+</body>
+</html>
