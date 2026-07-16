@@ -85,13 +85,20 @@ def _discover_builtin_cards() -> dict:
     return cards
 
 
-def discover_agent_cards(cwd: str | None = None) -> dict:
+def discover_agent_cards(
+    cwd: str | None = None, scan_dirs: list[str] | None = None,
+) -> dict:
     """Return ``{stem_lower: path}`` for all available cards.
 
     Builtin cards (shipped with the package) form the base layer; any
     ``agents/*.md`` in the project overrides a builtin with the same stem
     (case-insensitive). Each ``.md`` file directly under ``agents/`` is one
     card; subdirectories are not scanned (single-directory convention).
+
+    Extra ``scan_dirs`` (config ``add_scan_dirs``) are scanned last — each as
+    ``<dir>/agents/*.md`` — and only fill in stems not already found, so
+    builtin/project cards win on collision (first-wins, matching skill
+    discovery priority).
 
     Paths may be :class:`pathlib.Path` (project cards) or
     ``importlib.resources.Traversable`` (builtins); both expose
@@ -103,6 +110,17 @@ def discover_agent_cards(cwd: str | None = None) -> dict:
         for entry in sorted(d.iterdir()):
             if entry.is_file() and entry.suffix == ".md":
                 cards[entry.stem.lower()] = entry
+    # Extra scan dirs (config add_scan_dirs) — lowest priority (first-wins)
+    if scan_dirs:
+        for sd in scan_dirs:
+            ad = Path(sd) / "agents"
+            if not ad.is_dir():
+                continue
+            for entry in sorted(ad.iterdir()):
+                if entry.is_file() and entry.suffix == ".md":
+                    stem = entry.stem.lower()
+                    if stem not in cards:
+                        cards[stem] = entry
     return cards
 
 
@@ -175,12 +193,14 @@ def _parse_card(text: str) -> AgentCard:
     return card
 
 
-def load_agent_card(name: str, cwd: str | None = None) -> AgentCard:
+def load_agent_card(
+    name: str, cwd: str | None = None, scan_dirs: list[str] | None = None,
+) -> AgentCard:
     """Load and parse an AgentCard by name (case-insensitive stem match).
 
     Raises :class:`SystemExit` listing available cards when not found.
     """
-    cards = discover_agent_cards(cwd)
+    cards = discover_agent_cards(cwd, scan_dirs)
     lower = name.lower()
     path = cards.get(lower)
     if path is None:

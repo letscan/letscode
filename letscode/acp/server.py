@@ -140,6 +140,8 @@ class LetscodeAgent:
         # Per-session in-flight title-generation tasks (so we don't double-fire).
         self._session_title_task: dict[str, asyncio.Task] = {}
         self._load_models()
+        self._scan_dirs: list[str] = []
+        self._load_scan_dirs()
 
     def _load_models(self) -> None:
         from ..config import list_models
@@ -148,6 +150,14 @@ class LetscodeAgent:
             logger.info("Loaded %d models, default=%s", len(self._models), self._default_model)
         except Exception as e:
             logger.warning("Failed to load models: %s", e)
+
+    def _load_scan_dirs(self) -> None:
+        from ..config import load_scan_dirs
+        try:
+            self._scan_dirs = load_scan_dirs(self.config_path)
+            logger.info("Loaded %d add_scan_dirs", len(self._scan_dirs))
+        except Exception as e:
+            logger.warning("Failed to load scan dirs: %s", e)
 
     def _model_context_window(self, model_id: str | None) -> int | None:
         """Look up a model's context_window from the loaded config entries."""
@@ -175,7 +185,7 @@ class LetscodeAgent:
         """Create a per-session command registry with builtins + cwd-specific skills."""
         registry = create_builtin_registry()
         try:
-            register_skills(registry, cwd)
+            register_skills(registry, cwd, scan_dirs=self._scan_dirs)
         except Exception:
             logger.debug("Skill discovery failed for cwd=%s", cwd, exc_info=True)
         return registry
@@ -255,7 +265,7 @@ class LetscodeAgent:
         """
         out: list[tuple[str, str, str | None]] = []
         try:
-            cards = discover_agent_cards(cwd)
+            cards = discover_agent_cards(cwd, self._scan_dirs)
         except Exception:
             logger.debug("Agent card discovery failed for cwd=%s", cwd, exc_info=True)
             return out
@@ -299,7 +309,7 @@ class LetscodeAgent:
             session.agent_card = None
             return True
         try:
-            cards = discover_agent_cards(session.cwd)
+            cards = discover_agent_cards(session.cwd, self._scan_dirs)
         except Exception:
             logger.debug("Agent card discovery failed for cwd=%s", session.cwd, exc_info=True)
             return False
@@ -497,6 +507,11 @@ class LetscodeAgent:
         effort_opts = self._model_effort_options(session.model)
         if effort_opts:
             cmd.extend(["--effort", session.reasoning_effort or effort_opts[0]])
+        # Extra scan dirs: forward explicitly so the subprocess discovers the
+        # same skills/agent cards as the server (it re-reads config, but this
+        # guarantees parity and makes the dependency visible in argv).
+        for d in self._scan_dirs:
+            cmd.extend(["--add-scan-dir", d])
         cmd.extend(["--max-turns", str(_DEFAULT_MAX_TURNS)])
 
         from .session import _sessions_dir

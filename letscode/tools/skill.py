@@ -103,14 +103,37 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return frontmatter, body
 
 
-def _skill_dirs(cwd: str | None = None) -> list[Path]:
+# Runtime scan dirs (from config.add_scan_dirs / --add-scan-dir), set once at
+# startup by cli.py. Lets execute() — which is called with no args via the
+# uniform ToolRunner protocol — resolve skills from the configured extra roots
+# without threading config through the tool-call boundary.
+_runtime_scan_dirs: list[str] = []
+
+
+def set_scan_dirs(dirs: list[str]) -> None:
+    """Set the runtime extra scan dirs (config.add_scan_dirs + --add-scan-dir).
+
+    Each dir is scanned as ``<dir>/skills``. Lowest priority: project/walk-up/
+    user dirs win on name collisions (first-wins in _discover_skills).
+    """
+    global _runtime_scan_dirs
+    _runtime_scan_dirs = list(dirs or [])
+
+
+def _skill_dirs(cwd: str | None = None, scan_dirs: list[str] | None = None) -> list[Path]:
     """Return skill directories to scan, in priority order.
 
     Searches both .claude/skills/ (client-specific) and .agents/skills/
     (cross-client interop) at each level. .claude/ takes precedence.
+    Extra ``scan_dirs`` (config ``add_scan_dirs``) are scanned last — each as
+    ``<dir>/skills`` — so user/project skills override them on name collision.
+
+    When ``scan_dirs`` is None, falls back to the module-level runtime dirs set
+    via :func:`set_scan_dirs`, so the no-arg Skill execute path still sees them.
     """
     dirs: list[Path] = []
     base = cwd or os.getcwd()
+    extra = scan_dirs if scan_dirs is not None else _runtime_scan_dirs
 
     def _add_skill_bases(root: Path) -> None:
         for client_dir in (".claude", ".agents"):
@@ -130,14 +153,20 @@ def _skill_dirs(cwd: str | None = None) -> list[Path]:
     # User-level
     _add_skill_bases(Path.home())
 
+    # Extra scan dirs (config add_scan_dirs) — lowest priority
+    for d in extra:
+        sd = Path(d) / "skills"
+        if sd.is_dir():
+            dirs.append(sd)
+
     return dirs
 
 
-def _discover_skills(cwd: str | None = None) -> dict[str, Path]:
+def _discover_skills(cwd: str | None = None, scan_dirs: list[str] | None = None) -> dict[str, Path]:
     """Scan skill directories and return {name: SKILL.md path}."""
     skills: dict[str, Path] = {}
 
-    for skill_dir in _skill_dirs(cwd):
+    for skill_dir in _skill_dirs(cwd, scan_dirs):
         if not skill_dir.is_dir():
             continue
         for entry in sorted(skill_dir.iterdir()):
@@ -220,14 +249,16 @@ def execute(args: dict[str, Any], **_) -> str:
     return f"Loaded skill {canonical_name} from {skill_path}"
 
 
-def get_skill_list(cwd: str | None = None) -> list[dict[str, str]]:
+def get_skill_list(
+    cwd: str | None = None, scan_dirs: list[str] | None = None,
+) -> list[dict[str, str]]:
     """Return list of {name, description, path} for available skills.
 
     `name` + `description` feed the system-prompt listing (model discovery);
     `path` is the cached locator the Skill tool uses at execution time, so
     it need not re-scan the filesystem.
     """
-    skills = _discover_skills(cwd)
+    skills = _discover_skills(cwd, scan_dirs)
     result = []
     for name, path in sorted(skills.items()):
         try:

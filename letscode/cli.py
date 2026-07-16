@@ -26,6 +26,20 @@ from .tools import TOOL_DEFINITIONS, EXECUTORS
 from .tools.runner import ToolRunner
 
 
+def _merge_scan_dirs(config_dirs: list[str], cli_dirs: list[str] | None) -> list[str]:
+    """Merge config ``add_scan_dirs`` with ``--add-scan-dir`` flags.
+
+    Config dirs first, CLI dirs appended, de-duplicated while preserving order.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    for d in [*config_dirs, *(cli_dirs or [])]:
+        if d and d not in seen:
+            merged.append(d)
+            seen.add(d)
+    return merged
+
+
 async def _async_main(args):
     """Main entry: single event loop for MCP connections + agent loop."""
     original_cwd = os.getcwd()
@@ -36,10 +50,18 @@ async def _async_main(args):
     try:
         config, mcp_servers = load_config(args.config, args.model)
 
+        # Effective extra scan dirs: config add_scan_dirs + --add-scan-dir flags,
+        # merged (config first, CLI appended, de-duplicated). Set on the skill
+        # module's runtime state so the Skill tool (called with no args via the
+        # ToolRunner protocol) resolves skills from these roots at exec time.
+        scan_dirs = _merge_scan_dirs(config.add_scan_dirs, args.add_scan_dirs)
+        from .tools.skill import set_scan_dirs
+        set_scan_dirs(scan_dirs)
+
         # AgentCard: merge card with (config, mcp_servers) once, up front.
         # CLI overrides below run after apply_card, so CLI > card naturally
         # (e.g. --no-mcp zeros out the card-filtered mcp_servers).
-        card = load_agent_card(args.agent) if args.agent else None
+        card = load_agent_card(args.agent, scan_dirs=scan_dirs) if args.agent else None
         overrides = apply_card(config, mcp_servers, card)
         mcp_servers = overrides.mcp_servers
 
@@ -188,9 +210,10 @@ async def _async_main(args):
                     overrides.system_prompt,
                     model_id=model,
                     skill_allowlist=overrides.skill_allowlist,
+                    scan_dirs=scan_dirs,
                 )
             else:
-                system_prompt = build_system_prompt(model)
+                system_prompt = build_system_prompt(model, scan_dirs=scan_dirs)
 
             # Vision proxy: if the active model can't see images but a
             # vision_model is configured, route each image through it and splice
@@ -440,6 +463,14 @@ def main():
         default=None,
     )
     parser.add_argument(
+        "--add-scan-dir",
+        dest="add_scan_dirs",
+        help="Extra directory to scan for skills (<dir>/skills) and agent "
+             "cards (<dir>/agents). Repeatable. Appended to config add_scan_dirs.",
+        action="append",
+        default=None,
+    )
+    parser.add_argument(
         "--text",
         help="Prompt text block (repeatable; combined with --image in the "
              "order given on the command line)",
@@ -474,7 +505,9 @@ def main():
         return
 
     if args.list_agents:
-        cards = discover_agent_cards()
+        from .config import load_scan_dirs
+        scan_dirs = _merge_scan_dirs(load_scan_dirs(args.config), args.add_scan_dirs)
+        cards = discover_agent_cards(scan_dirs=scan_dirs)
         if not cards:
             print("(no agent cards found; create agents/<Name>.md)")
             return

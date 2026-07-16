@@ -23,19 +23,22 @@ def render_card_template(
     *,
     model_id: str,
     skill_allowlist: set[str] | None = None,
+    scan_dirs: list[str] | None = None,
 ) -> str:
     """Render ``{{ env }}`` / ``{{ skills }}`` / ``{{ default_system_prompt }}``.
 
     Unknown variable names are preserved verbatim. ``skill_allowlist`` (when the
     card restricts skills) is forwarded so ``{{ skills }}`` lists only the
-    skills the card permits.
+    skills the card permits. ``scan_dirs`` threads extra discovery roots
+    (config ``add_scan_dirs``) into both ``{{ skills }}`` and
+    ``{{ default_system_prompt }}``.
     """
     from .prompt import _env_section, _skills_section, build_system_prompt
 
     variables = {
         "env": _env_section(model_id),
-        "skills": _skills_section(skill_allowlist=skill_allowlist),
-        "default_system_prompt": build_system_prompt(model_id),
+        "skills": _skills_section(skill_allowlist=skill_allowlist, scan_dirs=scan_dirs),
+        "default_system_prompt": build_system_prompt(model_id, scan_dirs=scan_dirs),
     }
 
     def _sub(m: re.Match) -> str:

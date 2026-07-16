@@ -21,6 +21,9 @@ class ModelConfig:
     cache: str = "auto"
     extra_body: dict | None = None
     effort_options: list[str] | None = None
+    # Extra roots to scan for skills (<dir>/skills) and agent cards
+    # (<dir>/agents). Lowest priority (project > walk-up > user > add_scan_dirs).
+    add_scan_dirs: list = field(default_factory=list)
 
 
 # MCP server config: either {command, args?, env?} for stdio or {url, headers?} for http/sse
@@ -51,6 +54,7 @@ def _load_config_file(config_path: str | None) -> tuple:
     sandbox_preset: str = "default"
     sandbox: bool = True
     rules: dict | None = None
+    add_scan_dirs: list = []
 
     if config_path:
         with open(config_path) as f:
@@ -61,9 +65,12 @@ def _load_config_file(config_path: str | None) -> tuple:
         sandbox_preset = data.get("preset", "default")
         sandbox = data.get("sandbox", True)
         rules = data.get("rules")
+        raw_scan_dirs = data.get("add_scan_dirs", [])
+        if isinstance(raw_scan_dirs, list):
+            add_scan_dirs = [str(d) for d in raw_scan_dirs]
         models = _flatten_providers(data.get("providers", {}))
 
-    return models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules
+    return models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules, add_scan_dirs
 
 
 def _flatten_providers(providers: dict) -> list[dict]:
@@ -115,6 +122,16 @@ def load_vision_model_id(config_path: str | None) -> str | None:
     return vision_model
 
 
+def load_scan_dirs(config_path: str | None) -> list[str]:
+    """Return the configured ``add_scan_dirs`` list (top-level), or [].
+
+    Lightweight read for callers (e.g. the ACP server) that need the scan
+    dirs without constructing a full :class:`ModelConfig`.
+    """
+    *_, add_scan_dirs = _load_config_file(config_path)
+    return list(add_scan_dirs)
+
+
 def load_config(
     config_path: str | None, model_id: str | None = None,
 ) -> tuple[ModelConfig, dict[str, McpServerConfig]]:
@@ -137,7 +154,7 @@ def load_config(
         }
     }
     """
-    models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules = _load_config_file(config_path)
+    models, default_model, vision_model, mcp_servers, sandbox_preset, sandbox, rules, add_scan_dirs_list = _load_config_file(config_path)
 
     target = model_id or default_model
 
@@ -177,9 +194,10 @@ def load_config(
             cache=entry.get("cache", "auto"),
             extra_body=entry.get("extra_body") or None,
             effort_options=entry.get("effort_options") or None,
+            add_scan_dirs=add_scan_dirs_list,
         )
     elif target:
-        cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules)
+        cfg = ModelConfig(model=target, preset=sandbox_preset, sandbox=sandbox, rules=rules, add_scan_dirs=add_scan_dirs_list)
     else:
         raise SystemExit(
             "No model specified. Use --model or set default_model in config file."

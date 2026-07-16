@@ -305,11 +305,14 @@ def create_builtin_registry() -> SlashCommandRegistry:
     return registry
 
 
-def register_skills(registry: SlashCommandRegistry, cwd: str) -> None:
+def register_skills(
+    registry: SlashCommandRegistry, cwd: str,
+    scan_dirs: list[str] | None = None,
+) -> None:
     """Discover skills for cwd and register them as slash commands (no handler)."""
     from ..tools.skill import get_skill_list
 
-    for skill in get_skill_list(cwd):
+    for skill in get_skill_list(cwd, scan_dirs=scan_dirs):
         name = skill["name"]
         desc = skill.get("description", name)
         registry.register(name, desc, handler=None, is_skill=True)

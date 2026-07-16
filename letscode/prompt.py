@@ -161,7 +161,10 @@ def _env_section(model_id: str) -> str:
     )
 
 
-def _skills_section(skill_allowlist: set[str] | None = None) -> str:
+def _skills_section(
+    skill_allowlist: set[str] | None = None,
+    scan_dirs: list[str] | None = None,
+) -> str:
     """Inject available skills (name + description) for model-driven discovery.
 
     Only name + description are injected — the model uses these to decide
@@ -174,7 +177,7 @@ def _skills_section(skill_allowlist: set[str] | None = None) -> str:
     """
     from .tools.skill import get_skill_list
 
-    skills = get_skill_list()
+    skills = get_skill_list(scan_dirs=scan_dirs)
     if skill_allowlist is not None:
         allow = {s.lower() for s in skill_allowlist}
         skills = [s for s in skills if s["name"].lower() in allow]
@@ -194,7 +197,9 @@ def _skills_section(skill_allowlist: set[str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(model_id: str) -> str:
+def build_system_prompt(
+    model_id: str, scan_dirs: list[str] | None = None,
+) -> str:
     """Assemble the full system prompt."""
     return "\n\n".join([
         _intro_section(),
@@ -205,5 +210,5 @@ def build_system_prompt(model_id: str) -> str:
         _tone_and_style_section(),
         _output_efficiency_section(),
         _env_section(model_id),
-        _skills_section(),
+        _skills_section(scan_dirs=scan_dirs),
     ])
