@@ -39,6 +39,7 @@ from acp.schema import (
 )
 
 from .. import __version__
+from ..agent_card import _parse_card, discover_agent_cards
 from ..feed_util import split_turns, write_events
 from .commands import SlashCommandRegistry, create_builtin_registry, parse_slash_command, register_skills
 from .session import Session, create_session, list_sessions, load_session_meta, save_session
@@ -108,6 +109,12 @@ def _make_replay_stat_quote(data: dict, prev_tokens: int, prev_turn: int) -> str
 def _get_modes() -> list[dict]:
     from ..sandbox import list_presets
     return list_presets()
+
+
+# Fixed sandbox preset ids (from sandbox.py). Card stems live in a separate
+# namespace (user-defined), so membership in this set is the dispatch signal:
+# value in the set → preset path; otherwise → card stem path.
+_PRESET_IDS = {"safe", "default", "risk"}
 
 
 class LetscodeAgent:
@@ -184,11 +191,11 @@ class LetscodeAgent:
                 name="Session Mode",
                 category="mode",
                 type="select",
-                current_value=session.mode,
+                current_value=session.agent_card or session.mode,
                 options=[
                     SessionConfigSelectOption(value=m["id"], name=m["name"], description=m["description"])
                     for m in _get_modes()
-                ],
+                ] + self._discover_card_options(session.cwd),
             ),
         ]
         if self._models:
@@ -225,12 +232,82 @@ class LetscodeAgent:
 
     def _build_modes(self, session: Session) -> SessionModeState:
         return SessionModeState(
-            current_mode_id=session.mode,
+            current_mode_id=session.agent_card or session.mode,
             available_modes=[
                 SessionMode(id=m["id"], name=m["name"], description=m["description"])
                 for m in _get_modes()
+            ] + [
+                SessionMode(id=stem, name=name, description=desc)
+                for stem, name, desc in self._discover_cards(session.cwd)
             ],
         )
+
+    def _discover_cards(self, cwd: str) -> list[tuple[str, str, str | None]]:
+        """Discover agent cards in ``cwd`` as ``(stem, name, description)``.
+
+        The stem is the lowercase round-trip key for :func:`load_agent_card`;
+        ``name``/``description`` come from the card frontmatter (falling back
+        to the stem for ``name``). The display ``name`` is prefixed with
+        ``Agent:`` so cards are visually distinguishable from sandbox presets
+        in the merged mode dropdown — the stem (the wire value) stays raw.
+        Cards that fail to parse are skipped. Returns ``[]`` when no cards
+        exist — never raises.
+        """
+        out: list[tuple[str, str, str | None]] = []
+        try:
+            cards = discover_agent_cards(cwd)
+        except Exception:
+            logger.debug("Agent card discovery failed for cwd=%s", cwd, exc_info=True)
+            return out
+        for stem, path in cards.items():
+            try:
+                card = _parse_card(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.debug("Skipping unreadable agent card %s", path, exc_info=True)
+                continue
+            display_name = f"Agent: {card.name or stem}"
+            out.append((stem, display_name, card.description))
+        return out
+
+    def _discover_card_options(self, cwd: str) -> list[SessionConfigSelectOption]:
+        """Discover agent cards in ``cwd`` as config select options.
+
+        Thin mapper over :meth:`_discover_cards` for the ``configOptions[mode]``
+        dropdown. Returns ``[]`` when no cards exist — never raises.
+        """
+        return [
+            SessionConfigSelectOption(value=stem, name=name, description=desc)
+            for stem, name, desc in self._discover_cards(cwd)
+        ]
+
+    def _apply_mode_selection(self, session: Session, value: str) -> bool:
+        """Apply a mode-dropdown selection to ``session``.
+
+        Dispatches on the value: a fixed preset id (``safe``/``default``/``risk``)
+        selects the sandbox preset and clears any card; anything else is treated
+        as a card stem and, when it resolves to a discovered card, sets
+        ``agent_card`` and resets ``mode`` to ``default`` (so the card's own
+        preset takes effect rather than clashing with ``--preset``).
+
+        Returns ``True`` when the value matched a preset or a known card
+        (and ``session`` was mutated); ``False`` when it matched neither (the
+        caller treats this as "unknown value" and bails out without changing
+        state).
+        """
+        if value in _PRESET_IDS:
+            session.mode = value
+            session.agent_card = None
+            return True
+        try:
+            cards = discover_agent_cards(session.cwd)
+        except Exception:
+            logger.debug("Agent card discovery failed for cwd=%s", session.cwd, exc_info=True)
+            return False
+        if value in cards:
+            session.agent_card = value
+            session.mode = "default"
+            return True
+        return False
 
     def _build_models_state(self, session: Session) -> SessionModelState | None:
         if not self._models:
@@ -413,6 +490,8 @@ class LetscodeAgent:
             cmd.extend(["--model", session.model])
         if session.mode != "default":
             cmd.extend(["--preset", session.mode])
+        if session.agent_card:
+            cmd.extend(["--as", session.agent_card])
         # Reasoning effort: only forward when the model declares tiers; the
         # CLI resolves the tier to the reasoning_effort extra_body field.
         effort_opts = self._model_effort_options(session.model)
@@ -795,12 +874,15 @@ class LetscodeAgent:
         session = self.sessions.get(session_id)
         if session is None:
             return None
-        session.mode = mode_id
+        if not self._apply_mode_selection(session, mode_id):
+            # Unknown value (neither a preset nor a discovered card): bail out
+            # without mutating state, mirroring unknown-config-id behavior.
+            return None
         save_session(session)
         if self._conn is not None:
             await self._conn.session_update(
                 session_id=session_id,
-                update=h.update_current_mode(mode_id),
+                update=h.update_current_mode(session.agent_card or session.mode),
             )
         return {}
 
@@ -813,7 +895,8 @@ class LetscodeAgent:
             return None
 
         if config_id == "mode":
-            session.mode = str(value)
+            if not self._apply_mode_selection(session, str(value)):
+                return None
         elif config_id == "model":
             session.model = str(value)
             # Context window may differ per model; refresh the cached size.

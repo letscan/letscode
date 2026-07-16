@@ -15,6 +15,7 @@ class Session:
     log_path: str | None = None
     title: str | None = None
     mode: str = "default"
+    agent_card: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
 
@@ -52,6 +53,7 @@ def save_session(session: Session) -> None:
         "title": session.title,
         "log_path": session.log_path,
         "mode": session.mode,
+        "agent_card": session.agent_card,
         "model": session.model,
         "reasoning_effort": session.reasoning_effort,
     }
@@ -72,6 +74,7 @@ def load_session_meta(session_id: str, cwd: str) -> Session | None:
             log_path=data.get("log_path"),
             title=data.get("title"),
             mode=data.get("mode", "default"),
+            agent_card=data.get("agent_card"),
             model=data.get("model"),
             reasoning_effort=data.get("reasoning_effort"),
         )
@@ -106,6 +109,7 @@ def list_sessions(
                 log_path=data.get("log_path"),
                 title=data.get("title"),
                 mode=data.get("mode", "default"),
+                agent_card=data.get("agent_card"),
                 model=data.get("model"),
                 reasoning_effort=data.get("reasoning_effort"),
             ))
