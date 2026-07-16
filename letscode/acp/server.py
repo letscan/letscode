@@ -25,6 +25,7 @@ from acp.schema import (
     NewSessionResponse,
     PromptCapabilities,
     PromptResponse,
+    ResumeSessionResponse,
     SessionCapabilities,
     SessionConfigSelectOption,
     SessionConfigOptionSelect,
@@ -374,7 +375,7 @@ class LetscodeAgent:
                 prompt_capabilities=PromptCapabilities(embedded_context=False, image=True),
                 mcp_capabilities=McpCapabilities(http=True, sse=True),
                 load_session=True,
-                session_capabilities=SessionCapabilities(close={}, list={}),
+                session_capabilities=SessionCapabilities(close={}, list={}, resume={}),
             ),
             agent_info=Implementation(name="letscode-acp", version=__version__, title="letscode"),
             auth_methods=[],
@@ -868,6 +869,60 @@ class LetscodeAgent:
             models=self._build_models_state(session),
         )
 
+    async def resume_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,
+        mcp_servers: list | None = None,
+        **kwargs: Any,
+    ) -> ResumeSessionResponse | None:
+        """Resume a session WITHOUT replaying conversation history.
+
+        Unlike :meth:`load_session`, this restores the agent's internal state
+        (session meta, per-session bookkeeping, command registry) but does NOT
+        stream past events to the client. It is meant for clients that already
+        hold the conversation history themselves (e.g. a chat-style front end
+        that cannot render replayed ``user_message_chunk`` events as "the user
+        said this"). The agent's ``--feed`` replay still sees the full history
+        on the next ``prompt()``.
+
+        ``additional_directories`` and ``mcp_servers`` from the request are
+        accepted (protocol-compliant) but not yet consumed — letscode discovers
+        resources from ``cwd`` and its own config.
+        """
+        logger.info("resume_session(session=%s, cwd=%s)", session_id[:12], cwd)
+        session = load_session_meta(session_id, cwd)
+        if session is None:
+            return None
+
+        # Register the session so subsequent prompt() calls find it. The log
+        # path may be absent for a never-prompted session; that's fine — the
+        # next prompt() will create it. We only need the meta to drive
+        # config_options/modes and the subprocess --feed argv.
+        self.sessions[session_id] = session
+        self._session_commands[session_id] = self._build_commands(cwd)
+        cw = self._model_context_window(session.model)
+        if cw:
+            self._session_context_window[session_id] = cw
+        # Recover the last turn's cumulative prompt_tokens (if a log exists)
+        # so the initial usage_update reflects the current context fill — read
+        # the log without streaming anything to the client.
+        if session.log_path and Path(session.log_path).exists():
+            events = await asyncio.to_thread(_read_log_events, session.log_path)
+            last_tokens = _last_prompt_tokens(events)
+            if last_tokens:
+                self._session_prompt_tokens[session_id] = last_tokens
+        asyncio.create_task(self._deferred_send_commands(session_id))
+        # usage_update is emitted via set_config_option(model), which the
+        # client sends right after resume_session — no need to send here.
+
+        return ResumeSessionResponse(
+            config_options=self._build_config_options(session),
+            modes=self._build_modes(session),
+            models=self._build_models_state(session),
+        )
+
     async def list_sessions(self, cwd: str | None = None, cursor: str | None = None, **kwargs: Any) -> ListSessionsResponse:
         logger.debug("list_sessions(cwd=%s, cursor=%s)", cwd, cursor)
         sessions, next_cursor = list_sessions(cwd, cursor)
@@ -952,8 +1007,13 @@ class LetscodeAgent:
                 self._agent_proc.kill()
             except ProcessLookupError:
                 pass
+        # Drop all per-session state so a closed id doesn't leak stale entries.
         self.sessions.pop(session_id, None)
         self._session_commands.pop(session_id, None)
+        self._session_context_window.pop(session_id, None)
+        self._session_prompt_tokens.pop(session_id, None)
+        self._session_big_turn.pop(session_id, None)
+        self._session_title_task.pop(session_id, None)
         return {}
 
 

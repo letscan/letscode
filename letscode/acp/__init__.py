@@ -37,4 +37,4 @@ def run_acp_server(
     logger = logging.getLogger("letscode-acp")
     acp_version = importlib.metadata.version("agent-client-protocol")
     logger.info("Starting letscode-acp (agent-client-protocol SDK v%s)", acp_version)
-    asyncio.run(run_agent(agent))
+    asyncio.run(run_agent(agent, use_unstable_protocol=True))
