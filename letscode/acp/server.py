@@ -32,6 +32,7 @@ from acp.schema import (
     SessionMode,
     SessionModeState,
     SessionModelState,
+    SetSessionConfigOptionResponse,
     ToolCallLocation,
     Usage,
     UsageUpdate,
@@ -803,7 +804,9 @@ class LetscodeAgent:
             )
         return {}
 
-    async def set_config_option(self, config_id: str, session_id: str, value: str | bool, **kwargs: Any):
+    async def set_config_option(
+        self, config_id: str, session_id: str, value: str | bool, **kwargs: Any
+    ) -> SetSessionConfigOptionResponse | None:
         logger.info("set_config_option(session=%s, %s=%s)", session_id[:12], config_id, value)
         session = self.sessions.get(session_id)
         if session is None:
@@ -827,16 +830,22 @@ class LetscodeAgent:
         else:
             return None
 
+        config_options = self._build_config_options(session)
         save_session(session)
         if self._conn is not None:
             await self._conn.session_update(
                 session_id=session_id,
                 update=ConfigOptionUpdate(
                     session_update="config_option_update",
-                    config_options=self._build_config_options(session),
+                    config_options=config_options,
                 ),
             )
-        return {}
+        # SetSessionConfigOptionResponse.configOptions is mandatory in the
+        # ACP schema; returning {} made the client's response validation
+        # fail. Mirror new_session/load_session by echoing the post-update
+        # options so the caller sees the effective value (matches the
+        # ConfigOptionUpdate pushed above).
+        return SetSessionConfigOptionResponse(config_options=config_options)
 
     async def close_session(self, session_id: str, **kwargs: Any):
         logger.info("close_session(session=%s)", session_id[:12])
