@@ -166,3 +166,98 @@ class TestCheckReadParity:
         monkeypatch.chdir(tmp_path)
         rules = Rules(allow_read=["/**"])
         assert check_read(str(tmp_path / ".aws" / "creds"), rules) is not None
+
+
+# ---------------------------------------------------------------------------
+# denial_sink — structured denial records (passive permission escalation)
+# ---------------------------------------------------------------------------
+
+class TestDenialSink:
+    """check_* functions optionally append {type, target} to a sink list on
+    denial. The return value is unchanged; the sink is the only new behavior."""
+
+    def test_check_write_denial_records_to_sink(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(deny_write=["/**"])
+        err = check_write(str(tmp_path / "x"), rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "write", "target": str(tmp_path / "x")}]
+
+    def test_check_write_allow_does_not_record(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(allow_write=["/**"])
+        err = check_write(str(tmp_path / "x"), rules, denial_sink=sink)
+        assert err is None
+        assert sink == []
+
+    def test_check_write_no_sink_unchanged_behavior(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        rules = Rules(deny_write=["/**"])
+        # No sink arg — existing callers unaffected.
+        err = check_write(str(tmp_path / "x"), rules)
+        assert err is not None
+        assert "denied" in err
+
+    def test_check_read_denial_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(deny_read=["/tmp/**"])
+        err = check_read("/tmp/secret", rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "read", "target": "/tmp/secret"}]
+
+    def test_check_read_secret_path_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules()
+        err = check_read(str(tmp_path / ".env"), rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "read", "target": str(tmp_path / ".env")}]
+
+    def test_check_write_secret_path_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(allow_write=["/**"])
+        err = check_write(str(tmp_path / ".aws" / "creds"), rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "write", "target": str(tmp_path / ".aws" / "creds")}]
+
+    def test_check_write_allowlist_default_deny_records(self, tmp_path, monkeypatch):
+        # allow_write set but path not in it → default-deny, records too.
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(allow_write=["/safe/**"])
+        err = check_write(str(tmp_path / "elsewhere"), rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "write", "target": str(tmp_path / "elsewhere")}]
+
+    def test_check_cmd_records_on_deny(self, tmp_path, monkeypatch):
+        from letscode.rules import check_cmd
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(deny_cmd=["rm *"])
+        err = check_cmd("rm -rf /", rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "cmd", "target": "rm -rf /"}]
+
+    def test_check_cmd_truncates_target_to_80(self, tmp_path, monkeypatch):
+        from letscode.rules import check_cmd
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules(deny_cmd=["forbidden*"])
+        long_cmd = "forbidden " + "x" * 200
+        err = check_cmd(long_cmd, rules, denial_sink=sink)
+        assert err is not None
+        assert len(sink[0]["target"]) == 80
+        assert sink[0]["type"] == "cmd"
+
+    def test_check_cmd_shell_expansion_records(self, tmp_path, monkeypatch):
+        from letscode.rules import check_cmd
+        monkeypatch.chdir(tmp_path)
+        sink: list = []
+        rules = Rules()
+        err = check_cmd("echo $(whoami)", rules, denial_sink=sink)
+        assert err is not None
+        assert sink == [{"type": "cmd", "target": "echo $(whoami)"}]

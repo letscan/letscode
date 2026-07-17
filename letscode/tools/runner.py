@@ -56,6 +56,15 @@ class ToolRunner:
         # skills not named by the card. None = unrestricted.
         self._tool_allowlist = tool_allowlist
         self._skill_allowlist = skill_allowlist
+        # Structured denial log: every check_cmd / check_write / check_read
+        # denial appends a {type, target} record. Read by agent.py at
+        # session end to decide whether to emit a permission_denied error
+        # (passive permission escalation). See docs/plan-permission-escalation.md.
+        self._denials: list[dict] = []
+        # Reflects whether the most recently dispatched tool call hit a denial.
+        # Updated by agent.py after each call (compares denial-list length
+        # before/after). Drives the "last call was a denial" trigger.
+        self._last_call_denied: bool = False
 
     @property
     def definitions(self) -> list[dict]:
@@ -72,19 +81,34 @@ class ToolRunner:
     def rules(self) -> Rules:
         return self._rules
 
+    @property
+    def denials(self) -> list[dict]:
+        """Structured denial records collected during this run.
+
+        Each entry is ``{type: "read"|"write"|"cmd", target: str}``. Read by
+        agent.py at session end to drive the permission-escalation trigger.
+        """
+        return self._denials
+
+    @property
+    def last_call_denied(self) -> bool:
+        """True iff the most recently dispatched tool call hit a denial."""
+        return self._last_call_denied
+
     def _make_validate_path(self) -> ValidatePath:
         read_files = self._read_files
         rules = self._rules
+        denials = self._denials
 
         def validate_path(access: str, path: str) -> str | None:
             if access == "read":
-                err = check_read(path, rules)
+                err = check_read(path, rules, denial_sink=denials)
                 if err is None:
                     resolved = str(Path(path).expanduser().resolve())
                     read_files.add(resolved)
                 return err
             if access == "write":
-                return check_write(path, rules)
+                return check_write(path, rules, denial_sink=denials)
             return None
 
         return validate_path
@@ -101,6 +125,11 @@ class ToolRunner:
     async def execute(
         self, name: str, arguments: str,
     ) -> AsyncGenerator[ToolOutput | ToolResult, None]:
+        # Reset the per-call denial flag at the start of each dispatch so it
+        # reflects "did THIS call hit a permission denial". agent.py reads it
+        # after the loop to apply the "last call denied" trigger.
+        n_before = len(self._denials)
+
         # 1. Parse arguments
         try:
             args = json.loads(arguments) if arguments else {}
@@ -117,7 +146,7 @@ class ToolRunner:
         # 2. Coarse-grained: command allow/deny
         if name == "Bash":
             command = args.get("command", "")
-            if err := check_cmd(command, self._rules):
+            if err := check_cmd(command, self._rules, denial_sink=self._denials):
                 yield ToolResult(content=err, success=False)
                 return
 

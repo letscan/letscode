@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,24 @@ from .session import Session, create_session, list_sessions, load_session_meta, 
 logger = logging.getLogger("letscode-acp")
 
 _DEFAULT_MAX_TURNS = 30
+
+
+@dataclass
+class _SubprocessResult:
+    """Outcome of one letscode CLI subprocess run.
+
+    Captured by :meth:`LetscodeAgent._run_agent_subprocess` and consumed by
+    :meth:`LetscodeAgent.prompt` (and the escalation loop). ``pending_denials``
+    is non-empty only when the run emitted a ``permission_denied`` error —
+    the caller then decides whether to escalate.
+    """
+    stop_reason: str = "end_turn"
+    usage: Usage | None = None
+    usage_data: dict = field(default_factory=dict)
+    turn_prompt_tokens: int = 0
+    error_msg: str | None = None
+    pending_denials: list[dict] = field(default_factory=list)
+    exit_code: int | None = None
 
 
 def _human_tokens(n: int) -> str:
@@ -494,6 +513,104 @@ class LetscodeAgent:
         # the OpenAI message, so vision models see the image unchanged.
         cli_blocks = _spill_image_blocks(serialized_blocks, session.cwd)
 
+        from .session import _sessions_dir
+        log_path = _sessions_dir(session.cwd) / f"{session_id}.jsonl"
+        session.log_path = str(log_path)
+        save_session(session)
+
+        # Base argv shared by the initial run and any permission-escalation
+        # respawns. The respawn appends --allow + a continuation --text (feed
+        # already carries history, so no original prompt is re-sent).
+        base_cmd = self._base_agent_argv(session)
+        base_cmd.extend(["--feed", str(log_path), "--append"])
+
+        # Translate blocks to --text/--image argv tokens, preserving order.
+        for b in cli_blocks:
+            t = b.get("type")
+            if t == "text" and b.get("text") is not None:
+                base_cmd.extend(["--text", b["text"]])
+            elif t == "image_ref" and b.get("path"):
+                base_cmd.extend(["--image", b["path"]])
+
+        logger.info("Spawning letscode for session %s: %s", session_id[:12], " ".join(base_cmd))
+        self._cancelled = False
+        self._current_session_id = session_id
+
+        start_time = time.monotonic()
+        context_window = self._session_context_window.get(session_id)
+
+        # Initial run.
+        run = await self._run_agent_subprocess(base_cmd, session, session_id)
+
+        # ── Passive permission escalation ──
+        # If the best-effort loop exited with a permission_denied error, run
+        # a probe + permission popup and (on approval) respawn with --allow
+        # or persist an allow-always pattern. Loops until the agent stops
+        # hitting permission walls or the user rejects. Each iteration is
+        # gated by a user popup, so there is no hard respawn cap — the user
+        # is the brake. See docs/plan-permission-escalation.md.
+        if run.pending_denials and not self._cancelled:
+            run = await self._escalation_loop(
+                run, session, session_id, log_path, context_window,
+            )
+
+        elapsed = time.monotonic() - start_time
+        cancelled = self._cancelled
+
+        if not cancelled:
+            if run.error_msg:
+                raise RequestError.internal_error({"details": run.error_msg})
+            if run.exit_code:
+                raise RequestError.internal_error(
+                    {"details": f"Agent exited with code {run.exit_code}"}
+                )
+
+        # Context-window usage update (drives a fill gauge in the client UI).
+        # On cancel we fall back to the last recorded prompt_tokens so the
+        # gauge reflects the context accumulated so far.
+        usage_for_gauge = run.turn_prompt_tokens or self._session_prompt_tokens.get(session_id, 0)
+        if context_window and self._conn is not None and usage_for_gauge:
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=UsageUpdate(
+                        session_update="usage_update",
+                        used=usage_for_gauge, size=context_window,
+                    ),
+                )
+            except Exception:
+                logger.warning("Failed to emit usage update", exc_info=True)
+
+        # Per-turn stat quote appended as an agent message (markdown blockquote).
+        if self.show_stat and self._conn is not None:
+            prev = self._session_prompt_tokens.get(session_id, 0)
+            delta = max(run.turn_prompt_tokens - prev, 0)
+            self._session_prompt_tokens[session_id] = run.turn_prompt_tokens or prev
+            big_turn = self._session_big_turn.get(session_id, 0) + 1
+            self._session_big_turn[session_id] = big_turn
+            cache_read = (run.usage_data or {}).get("cache_read_tokens", 0)
+            quote = _format_stat_quote(big_turn, delta, elapsed,
+                                       cache_read=cache_read,
+                                       prompt_tokens=run.turn_prompt_tokens,
+                                       cancelled=cancelled)
+            try:
+                await self._conn.session_update(
+                    session_id=session_id,
+                    update=h.update_agent_message_text(quote),
+                )
+            except Exception:
+                logger.warning("Failed to emit stat quote", exc_info=True)
+
+        stop_reason = "cancelled" if cancelled else run.stop_reason
+        return PromptResponse(stop_reason=stop_reason, usage=run.usage)
+
+    def _base_agent_argv(self, session: Session) -> list[str]:
+        """Build the shared letscode CLI argv prefix for a session.
+
+        Excludes the per-prompt --text/--image tokens and the --feed/--append
+        pair, which callers add themselves (the initial run sends the prompt;
+        respawns send a fixed continuation string with --feed --append).
+        """
         cmd = [sys.executable, "-m", "letscode", "--event-stream", "--no-mcp"]
         if self.config_path:
             cmd.extend(["--config", self.config_path])
@@ -514,33 +631,23 @@ class LetscodeAgent:
         for d in self._scan_dirs:
             cmd.extend(["--add-scan-dir", d])
         cmd.extend(["--max-turns", str(_DEFAULT_MAX_TURNS)])
+        return cmd
 
-        from .session import _sessions_dir
-        log_path = _sessions_dir(session.cwd) / f"{session_id}.jsonl"
+    async def _run_agent_subprocess(
+        self, cmd: list[str], session: Session, session_id: str,
+    ) -> "_SubprocessResult":
+        """Spawn one letscode CLI subprocess and pump its event stream to ACP.
 
-        cmd.extend(["--feed", str(log_path), "--append"])
-
-        # Translate blocks to --text/--image argv tokens, preserving order.
-        for b in cli_blocks:
-            t = b.get("type")
-            if t == "text" and b.get("text") is not None:
-                cmd.extend(["--text", b["text"]])
-            elif t == "image_ref" and b.get("path"):
-                cmd.extend(["--image", b["path"]])
-
-        session.log_path = str(log_path)
-        save_session(session)
-
-        logger.info("Spawning letscode for session %s: %s", session_id[:12], " ".join(cmd))
-        self._cancelled = False
-        self._current_session_id = session_id
-
+        Returns a :class:`_SubprocessResult` summarizing the run. Translates
+        each event via :func:`_translate_event` and forwards updates to the
+        client connection. Reads the ``error`` event's ``code`` to surface
+        ``permission_denied`` as recoverable (``pending_denials``) rather than
+        raising.
+        """
         cwd = session.cwd if os.path.isdir(session.cwd) else os.getcwd()
-
-        exit_code: int | None = None
-        start_time = time.monotonic()
+        result = _SubprocessResult()
         context_window = self._session_context_window.get(session_id)
-        turn_prompt_tokens = 0
+
         try:
             self._agent_proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -550,9 +657,6 @@ class LetscodeAgent:
             )
             logger.info("Subprocess PID=%d started", self._agent_proc.pid)
 
-            stop_reason = "end_turn"
-            usage: Usage | None = None
-            error_msg: str | None = None
             pending_tool_inputs: dict[str, dict] = {}
 
             async for line in self._agent_proc.stdout:
@@ -574,21 +678,34 @@ class LetscodeAgent:
                     continue
                 if event.get("type") in ("result", "session/result"):
                     result_data = event.get("data", {})
-                    stop_reason = result_data.get("stopReason", "end_turn")
+                    result.stop_reason = result_data.get("stopReason", "end_turn")
                     if result_data.get("usage"):
-                        usage_data = result_data["usage"]
-                        turn_prompt_tokens = usage_data.get("prompt_tokens", 0)
-                        usage = Usage(
-                            input_tokens=usage_data.get("prompt_tokens", 0),
-                            output_tokens=usage_data.get("completion_tokens", 0),
-                            total_tokens=usage_data.get("total_tokens", 0),
-                            cached_read_tokens=usage_data.get("cache_read_tokens") or None,
-                            cached_write_tokens=usage_data.get("cache_write_tokens") or None,
-                            thought_tokens=usage_data.get("reasoning_tokens") or None,
+                        result.usage_data = result_data["usage"]
+                        result.turn_prompt_tokens = result.usage_data.get("prompt_tokens", 0)
+                        result.usage = Usage(
+                            input_tokens=result.usage_data.get("prompt_tokens", 0),
+                            output_tokens=result.usage_data.get("completion_tokens", 0),
+                            total_tokens=result.usage_data.get("total_tokens", 0),
+                            cached_read_tokens=result.usage_data.get("cache_read_tokens") or None,
+                            cached_write_tokens=result.usage_data.get("cache_write_tokens") or None,
+                            thought_tokens=result.usage_data.get("reasoning_tokens") or None,
                         )
                     continue
                 if event.get("type") == "error":
-                    error_msg = event.get("data", {}).get("message", "unknown error")
+                    edata = event.get("data", {})
+                    code = edata.get("code", "unknown")
+                    if code == "permission_denied":
+                        # Not fatal — drives the escalation flow. Capture the
+                        # structured denials for the probe; do NOT set error_msg
+                        # (that would raise after the run).
+                        result.pending_denials = edata.get("denials") or []
+                        logger.info(
+                            "Session %s: permission_denied (%d denial(s)) — "
+                            "entering escalation flow",
+                            session_id[:12], len(result.pending_denials),
+                        )
+                    else:
+                        result.error_msg = edata.get("message", "unknown error")
                     continue
 
                 update = _translate_event(event, pending_tool_inputs)
@@ -600,11 +717,14 @@ class LetscodeAgent:
                         await self._conn.session_update(session_id=session_id, update=update)
 
             await self._agent_proc.wait()
-            exit_code = self._agent_proc.returncode
-            logger.info("Subprocess exited rc=%d, stop_reason=%s", exit_code, stop_reason)
+            result.exit_code = self._agent_proc.returncode
+            logger.info(
+                "Subprocess exited rc=%d, stop_reason=%s",
+                result.exit_code, result.stop_reason,
+            )
 
             if self._cancelled:
-                stop_reason = "cancelled"
+                result.stop_reason = "cancelled"
 
         except RequestError:
             raise
@@ -626,60 +746,169 @@ class LetscodeAgent:
             self._agent_proc = None
             self._current_session_id = None
 
-        elapsed = time.monotonic() - start_time
+        return result
 
-        # A user-initiated cancel SIGKILLs the subprocess (exit -9); that's the
-        # expected outcome, not an error. Skip the error/exit-code checks so the
-        # prompt() returns cleanly with stop_reason="cancelled". We still emit
-        # the stat footer (below) so a cancelled turn leaves a marker — without
-        # usage data (the kill happens before the result event is written).
-        cancelled = self._cancelled
+    async def _escalation_loop(
+        self,
+        initial_run: "_SubprocessResult",
+        session: Session,
+        session_id: str,
+        log_path: Path,
+        context_window: int | None,
+    ) -> "_SubprocessResult":
+        """Run probe → popup → respawn / allow-always / abort until settled.
 
-        if not cancelled:
-            if error_msg:
-                raise RequestError.internal_error({"details": error_msg})
-            if exit_code:
-                raise RequestError.internal_error({"details": f"Agent exited with code {exit_code}"})
+        Each iteration: probe the transcript for the precise denied target,
+        ask the user via ``request_permission``, and on approval either respawn
+        with ``--allow <type>:<target>`` (allow-once) or persist a generalized
+        allow-always pattern + respawn (the subprocess reloads it from
+        ``.letscode/config.<session_id>.json`` via its --feed-derived sid).
 
-        # Context-window usage update (drives a fill gauge in the client UI).
-        # On cancel we fall back to the last recorded prompt_tokens so the
-        # gauge reflects the context accumulated so far.
-        usage_for_gauge = turn_prompt_tokens or self._session_prompt_tokens.get(session_id, 0)
-        if context_window and self._conn is not None and usage_for_gauge:
+        Returns the LAST run's result (which supersedes the initial run when
+        the user approved at least one escalation). If the user rejects or the
+        probe finds no real permission block, the initial run stands.
+        """
+        from .permission import (
+            add_session_allow_pattern,
+            probe_permission_request,
+        )
+        from ..feed_util import extract_conversation_text, read_events
+
+        run = initial_run
+        while run.pending_denials and not self._cancelled:
+            if self._conn is None:
+                # No connection (shouldn't happen during prompt()) — bail.
+                break
+
+            # ── Probe: extract the precise permission request ──
             try:
-                await self._conn.session_update(
-                    session_id=session_id,
-                    update=UsageUpdate(
-                        session_update="usage_update",
-                        used=usage_for_gauge, size=context_window,
-                    ),
-                )
+                events = await asyncio.to_thread(read_events, str(log_path))
+                transcript = extract_conversation_text(events)
             except Exception:
-                logger.warning("Failed to emit usage update", exc_info=True)
+                logger.warning("Failed to read feed for probe", exc_info=True)
+                transcript = ""
 
-        # Per-turn stat quote appended as an agent message (markdown blockquote).
-        if self.show_stat and self._conn is not None:
-            prev = self._session_prompt_tokens.get(session_id, 0)
-            delta = max(turn_prompt_tokens - prev, 0)
-            self._session_prompt_tokens[session_id] = turn_prompt_tokens or prev
-            big_turn = self._session_big_turn.get(session_id, 0) + 1
-            self._session_big_turn[session_id] = big_turn
-            cache_read = (usage_data or {}).get("cache_read_tokens", 0)
-            quote = _format_stat_quote(big_turn, delta, elapsed,
-                                       cache_read=cache_read,
-                                       prompt_tokens=turn_prompt_tokens,
-                                       cancelled=cancelled)
-            try:
-                await self._conn.session_update(
-                    session_id=session_id,
-                    update=h.update_agent_message_text(quote),
+            request = await probe_permission_request(
+                run.pending_denials, transcript,
+                model_id=session.model, config_path=self.config_path,
+            )
+            if request is None:
+                # Probe says it's not actually a permission block — stop.
+                logger.info(
+                    "Session %s: probe found no permission block; aborting escalation",
+                    session_id[:12],
                 )
-            except Exception:
-                logger.warning("Failed to emit stat quote", exc_info=True)
+                # Clear pending so the caller treats the run as final.
+                run.pending_denials = []
+                break
 
-        if cancelled:
-            stop_reason = "cancelled"
-        return PromptResponse(stop_reason=stop_reason, usage=usage)
+            # ── Popup: ask the user ──
+            outcome = await self._request_permission_popup(
+                session_id, request,
+            )
+            if outcome is None:
+                # Connection issue / no response — treat as reject.
+                run.pending_denials = []
+                break
+
+            option_id = outcome.get("option_id")
+            if option_id == "reject":
+                # User denied — stop. The best-effort agent's "I can't" text
+                # was already streamed before the popup.
+                run.pending_denials = []
+                break
+
+            # ── Approved: respawn ──
+            typ = request["type"]
+            target = request["target"]
+
+            if option_id == "approve_for_session":
+                # Persist a generalized allow-always pattern for this session.
+                from .permission import generalize_target
+                pattern = generalize_target(typ, target)
+                add_session_allow_pattern(session.cwd, session_id, typ, pattern)
+                logger.info(
+                    "Session %s: allow-always %s %s -> persisted %r",
+                    session_id[:12], typ, target, pattern,
+                )
+
+            # Build the respawn argv: base + --feed --append (resume context)
+            # + a fixed continuation prompt + --allow for allow-once precision.
+            # The generalized allow-always is picked up by the subprocess from
+            # .letscode/config.<session_id>.json (sid = --feed stem), so it
+            # does not need an argv flag.
+            respawn = self._base_agent_argv(session)
+            respawn.extend(["--feed", str(log_path), "--append"])
+            respawn.extend(["--text", "权限已更新,请继续"])
+            if option_id == "approve":
+                # Allow-once: precise target only (no generalization).
+                respawn.extend(["--allow", f"{typ}:{target}"])
+
+            logger.info(
+                "Session %s: respawning after permission approval (%s)",
+                session_id[:12], option_id,
+            )
+            self._current_session_id = session_id
+            run = await self._run_agent_subprocess(respawn, session, session_id)
+            # Loop continues: if the respawn ALSO exits with permission_denied,
+            # we probe again and re-prompt. The user popup is the brake.
+
+        return run
+
+    async def _request_permission_popup(
+        self, session_id: str, request: dict,
+    ) -> dict | None:
+        """Ask the client to approve the extracted permission request.
+
+        Returns ``{"option_id": "approve"|"approve_for_session"|"reject"}``
+        on a user selection, or ``None`` if the request could not be issued
+        (no connection) or the outcome was not a selection (denied/cancelled).
+        """
+        from acp.schema import (
+            PermissionOption, ToolCallUpdate,
+        )
+        from .permission import default_permission_options
+
+        if self._conn is None:
+            return None
+
+        typ = request.get("type", "")
+        target = request.get("target", "")
+        reason = request.get("reason", "")
+        title = f"Permission: {typ} {target}"
+        raw_input = (
+            f"```\n{target}\n```\n\n{reason}" if reason else f"```\n{target}\n```"
+        )
+
+        # The popup's tool_call card is synthetic — there is no underlying
+        # letscode tool call for "RequestPermission" (it's a probe artifact).
+        # Use a stable pseudo id so clients can track the card.
+        tool_call = ToolCallUpdate(
+            tool_call_id=f"perm-{session_id[:8]}",
+            title=title,
+            kind="other",
+            status="pending",
+            raw_input=raw_input,
+        )
+
+        try:
+            resp = await self._conn.request_permission(
+                options=list(default_permission_options()),
+                session_id=session_id,
+                tool_call=tool_call,
+            )
+        except Exception:
+            logger.warning("request_permission call failed", exc_info=True)
+            return None
+
+        outcome = getattr(resp, "outcome", None)
+        if outcome is None:
+            return None
+        # AllowedOutcome has outcome=="selected" + optionId; DeniedOutcome has
+        # outcome=="cancelled" with no option_id.
+        if getattr(outcome, "outcome", None) == "selected":
+            return {"option_id": getattr(outcome, "option_id", None)}
+        return None
 
     async def _handle_rename(self, session_id: str, args: str | None) -> None:
         """Handle /rename: set the title directly, or generate it when no arg.

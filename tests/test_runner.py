@@ -291,3 +291,76 @@ class TestDefinitions:
         rules = Rules(deny_write=["/**"])
         runner = ToolRunner([], {}, rules=rules)
         assert runner.rules is rules
+
+
+# ---------------------------------------------------------------------------
+# Denial collection (passive permission escalation)
+# ---------------------------------------------------------------------------
+
+class TestDenialCollection:
+    """ToolRunner.denials accumulates structured {type, target} records from
+    check_cmd / check_read / check_write denials.
+
+    ``last_call_denied`` is owned by agent.py (it compares the denial list
+    length before/after each dispatch); the runner only owns the list. Tests
+    for last_call_denied live in test_agent_escalation.py."""
+
+    def test_initial_state_empty(self):
+        runner = ToolRunner([], {}, rules=Rules())
+        assert runner.denials == []
+        assert runner.last_call_denied is False
+
+    def test_bash_denial_recorded(self):
+        runner = ToolRunner(
+            [], {}, rules=Rules(deny_cmd=["rm *"]),
+        )
+        _run(_collect(runner, "Bash", '{"command": "rm -rf /tmp"}'))
+        assert runner.denials == [{"type": "cmd", "target": "rm -rf /tmp"}]
+
+    def test_bash_allowed_no_denial(self):
+        def mock_bash(args, **kwargs):
+            return ToolResult(content="ok", success=True)
+        runner = ToolRunner(
+            [{"function": {"name": "Bash"}}],
+            {"Bash": mock_bash},
+            rules=Rules(),
+        )
+        _run(_collect(runner, "Bash", '{"command": "ls"}'))
+        assert runner.denials == []
+
+    def test_write_denial_via_validate_path(self):
+        runner = ToolRunner(
+            [], {}, rules=Rules(deny_write=["/**"]),
+        )
+        vp = runner._make_validate_path()
+        err = vp("write", "/etc/hosts")
+        assert err is not None
+        assert runner.denials == [{"type": "write", "target": "/etc/hosts"}]
+
+    def test_read_denial_via_validate_path(self):
+        runner = ToolRunner(
+            [], {}, rules=Rules(deny_read=["/tmp/**"]),
+        )
+        vp = runner._make_validate_path()
+        err = vp("read", "/tmp/secret")
+        assert err is not None
+        assert runner.denials == [{"type": "read", "target": "/tmp/secret"}]
+
+    def test_read_allowed_no_denial_recorded(self):
+        runner = ToolRunner([], {}, rules=Rules())
+        vp = runner._make_validate_path()
+        err = vp("read", "/tmp/safe")
+        assert err is None
+        assert runner.denials == []
+
+    def test_denials_accumulate_across_calls(self):
+        """Multiple denied calls accumulate records in order."""
+        runner = ToolRunner(
+            [], {}, rules=Rules(deny_cmd=["rm *", "dd *"]),
+        )
+        _run(_collect(runner, "Bash", '{"command": "rm -rf /a"}'))
+        _run(_collect(runner, "Bash", '{"command": "dd if=/dev/zero"}'))
+        assert runner.denials == [
+            {"type": "cmd", "target": "rm -rf /a"},
+            {"type": "cmd", "target": "dd if=/dev/zero"},
+        ]

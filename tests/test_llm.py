@@ -189,3 +189,49 @@ class TestCallLlm:
                 assert m.call_args.kwargs.get("extra_body") is None
 
         asyncio.run(run())
+
+
+class TestCallLlmTools:
+    """call_llm accepts an optional `tools` list to expose function-calling
+    schemas (used by the permission probe). Default behavior (no tools) is
+    unchanged."""
+
+    def test_default_no_tools_forwards_empty_list(self, tmp_path):
+        path = _config_file(tmp_path)
+        async def run():
+            with patch("letscode.llm.consume_stream_async", new=AsyncMock(
+                return_value=StreamResult(text_content="ok", tool_calls=[])
+            )) as m:
+                await call_llm([{"type": "text", "text": "hi"}], config_path=path)
+                assert m.call_args.kwargs.get("tools") == []
+        asyncio.run(run())
+
+    def test_explicit_tools_forwarded(self, tmp_path):
+        path = _config_file(tmp_path)
+        schema = [{"type": "function", "function": {
+            "name": "Foo", "parameters": {"type": "object", "properties": {}},
+        }}]
+        async def run():
+            with patch("letscode.llm.consume_stream_async", new=AsyncMock(
+                return_value=StreamResult(text_content="", tool_calls=[])
+            )) as m:
+                await call_llm(
+                    [{"type": "text", "text": "hi"}],
+                    config_path=path, tools=schema,
+                )
+                assert m.call_args.kwargs.get("tools") == schema
+        asyncio.run(run())
+
+    def test_tools_none_forwarded_as_empty(self, tmp_path):
+        # Explicit None must behave identically to the default (empty list).
+        path = _config_file(tmp_path)
+        async def run():
+            with patch("letscode.llm.consume_stream_async", new=AsyncMock(
+                return_value=StreamResult(text_content="ok", tool_calls=[])
+            )) as m:
+                await call_llm(
+                    [{"type": "text", "text": "hi"}],
+                    config_path=path, tools=None,
+                )
+                assert m.call_args.kwargs.get("tools") == []
+        asyncio.run(run())
