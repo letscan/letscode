@@ -40,6 +40,76 @@ def _merge_scan_dirs(config_dirs: list[str], cli_dirs: list[str] | None) -> list
     return merged
 
 
+# camelCase rules-key lookup for --allow parsing and session-config loading.
+# (rules.py uses camelCase: allowRead / allowWrite / allowCmd.)
+_ALLOW_TYPE_TO_KEY = {
+    "read": "allowRead",
+    "write": "allowWrite",
+    "cmd": "allowCmd",
+}
+
+
+def _parse_allow_flags(flags: list[str]) -> dict[str, list[str]]:
+    """Parse repeated ``--allow <type>:<target>`` flags into a rules dict.
+
+    ``<type>`` is one of ``read|write|cmd``. ``<target>`` is the path or
+    command string (verbatim; may contain spaces, colons, etc.). The target
+    is taken as everything after the FIRST colon, so paths/commands with
+    embedded colons are preserved. Unknown types raise ``SystemExit`` so a
+    typo fails loudly instead of silently dropping the grant.
+
+    Examples::
+
+        ["write:/etc/hosts"]                         → {"allowWrite": ["/etc/hosts"]}
+        ['cmd:npm run dev']                          → {"allowCmd": ["npm run dev"]}
+        ["write:/a:b.txt"]                           → {"allowWrite": ["/a:b.txt"]}
+    """
+    out: dict[str, list[str]] = {}
+    for flag in flags:
+        if ":" not in flag:
+            raise SystemExit(
+                f"--allow expects <type>:<target>, got {flag!r}"
+            )
+        typ, _, target = flag.partition(":")
+        typ = typ.strip()
+        if typ not in _ALLOW_TYPE_TO_KEY:
+            raise SystemExit(
+                f"--allow type must be read|write|cmd, got {typ!r}"
+            )
+        target = target.strip()
+        if not target:
+            raise SystemExit(
+                f"--allow target is empty in {flag!r}"
+            )
+        key = _ALLOW_TYPE_TO_KEY[typ]
+        out.setdefault(key, []).append(target)
+    return out
+
+
+def _load_session_allow_config(path: Path) -> dict[str, list[str]]:
+    """Load a session-level allow-always config written by the ACP server.
+
+    Format: ``{"allowRead": [...], "allowWrite": [...], "allowCmd": [...]}``
+    (camelCase, matching rules.py keys). Unknown keys are ignored; missing
+    file or parse errors return ``{}`` (a missing grant should never break
+    the run — the worst case is the user re-approves via popup).
+    """
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for k in ("allowRead", "allowWrite", "allowCmd"):
+        v = data.get(k)
+        if isinstance(v, list):
+            out[k] = [str(x) for x in v]
+    return out
+
+
 async def _async_main(args):
     """Main entry: single event loop for MCP connections + agent loop."""
     original_cwd = os.getcwd()
@@ -160,8 +230,37 @@ async def _async_main(args):
             if mcp_servers:
                 await mcp.connect_all(mcp_servers, quiet=args.event_stream)
 
-            # Build security rules (card rules already merged into rules_raw)
-            user_rules = load_rules(overrides.rules_raw)
+            # Build security rules (card rules already merged into rules_raw).
+            # Layering (lowest → highest precedence): preset → config/card
+            # rules_raw → session-level allow-always (.letscode/config.<sid>.json)
+            # → CLI --allow. Higher layers are more specific allow patterns,
+            # which the most-specific-wins engine promotes over broader denies.
+            rules_raw = dict(overrides.rules_raw or {})
+
+            # Session-level allow-always: written by the ACP server when the
+            # user picks "Approve for session". Bound to the session id, which
+            # is the --feed file name's stem (no extra flag needed). Pure CLI
+            # runs that pass --feed also pick this up; runs without --feed have
+            # no session id and skip it (one-shot, no in-session inheritance).
+            if args.feed:
+                sid = Path(args.feed).stem
+                sess_cfg_path = (
+                    Path(os.getcwd()) / ".letscode" / f"config.{sid}.json"
+                )
+                sess_rules = _load_session_allow_config(sess_cfg_path)
+                if sess_rules:
+                    for k, v in sess_rules.items():
+                        rules_raw.setdefault(k, [])
+                        rules_raw[k] = [*rules_raw[k], *v]
+
+            # CLI --allow <type>:<target> flags (repeatable). Parsed into the
+            # matching camelCase rules key. Highest precedence (most specific
+            # allow pattern), so they override broad denies via the escape hatch.
+            for k, v in _parse_allow_flags(args.allow or []).items():
+                rules_raw.setdefault(k, [])
+                rules_raw[k] = [*rules_raw[k], *v]
+
+            user_rules = load_rules(rules_raw)
             rules = merge_rules(config.preset, user_rules)
 
             # AgentCard tool whitelist: filter built-in tools (MCP tools are
@@ -454,6 +553,16 @@ def main():
         "--preset", "-p",
         help="Sandbox preset: safe (read-only), default (workspace writable), risk (full R/W)",
         choices=["safe", "default", "risk"],
+        default=None,
+    )
+    parser.add_argument(
+        "--allow",
+        help="Pre-approve a permission denial. Format: <type>:<target>, "
+             "where <type> is read|write|cmd and <target> is the exact path "
+             "or command. Repeatable. More specific than any deny rule, so a "
+             "--allow grant overrides a broad deny (the escape hatch). Used "
+             "internally by the ACP server to resume after a permission popup.",
+        action="append",
         default=None,
     )
     parser.add_argument(

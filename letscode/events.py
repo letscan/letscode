@@ -205,12 +205,23 @@ class EventHub:
         })
 
     def emit_error(self, message: str, code: str = "unknown",
-                   recoverable: bool = False) -> None:
-        self.emit("error", {
+                   recoverable: bool = False,
+                   extra: dict | None = None) -> None:
+        """Emit an error event.
+
+        ``extra`` carries optional structured fields beyond the standard
+        message/code/recoverable triple — currently used to attach the
+        ``denials`` list on ``code="permission_denied"`` so the ACP server can
+        run the escalation probe without re-reading the log.
+        """
+        data = {
             "message": message,
             "code": code,
             "recoverable": recoverable,
-        })
+        }
+        if extra:
+            data.update(extra)
+        self.emit("error", data)
 
     def emit_result(self, stop_reason: str) -> None:
         data: dict = {

@@ -276,18 +276,27 @@ def _match_cmd(command: str, patterns: list[str]) -> bool:
     return False
 
 
-def check_read(path: str, rules: Rules) -> str | None:
+def check_read(path: str, rules: Rules,
+               denial_sink: list | None = None) -> str | None:
     """Check if reading a path is allowed.
 
     Returns None if allowed, or an error message if denied.
     Priority: secrets baseline > most-specific matching rule (deny wins ties)
     > default allow.
+
+    ``denial_sink``: optional list to receive a structured ``{type, target}``
+    record when the read is denied. The harness collects these to detect
+    permission-blocked runs and surface a permission-escalation prompt
+    (see docs/plan-permission-escalation.md). The record is appended only on
+    denial — the return value is unchanged.
     """
     cwd = os.getcwd()
     resolved = str(Path(path).resolve())
 
     # 1. Hardcoded secrets baseline (highest priority)
     if _is_secret_path(resolved):
+        if denial_sink is not None:
+            denial_sink.append({"type": "read", "target": path})
         return f"<error>Read denied: sensitive path {path}</error>"
 
     # 2. Most-specific matching rule wins; deny wins ties
@@ -296,8 +305,12 @@ def check_read(path: str, rules: Rules) -> str | None:
     if allow_match is not None and deny_match is not None:
         if _pattern_specificity(allow_match) > _pattern_specificity(deny_match):
             return None  # allow is more specific
+        if denial_sink is not None:
+            denial_sink.append({"type": "read", "target": path})
         return f"<error>Read denied by denyRead rule: {deny_match}</error>"
     if deny_match is not None:
+        if denial_sink is not None:
+            denial_sink.append({"type": "read", "target": path})
         return f"<error>Read denied by denyRead rule: {deny_match}</error>"
 
     # 3. Default: allow (read is default-open; allow_read only acts as escape
@@ -305,19 +318,25 @@ def check_read(path: str, rules: Rules) -> str | None:
     return None
 
 
-def check_write(path: str, rules: Rules) -> str | None:
+def check_write(path: str, rules: Rules,
+                denial_sink: list | None = None) -> str | None:
     """Check if writing to a path is allowed.
 
     Returns None if allowed, or an error message if denied.
     Priority: secrets baseline > most-specific matching rule (deny wins ties).
     When allow_write is defined, non-matching paths are denied (default-deny
     under an allow-list); otherwise default-allow.
+
+    ``denial_sink``: optional list to receive a structured ``{type, target}``
+    record when the write is denied (see check_read for rationale).
     """
     cwd = os.getcwd()
     resolved = str(Path(path).resolve())
 
     # 1. Hardcoded secrets baseline (highest priority)
     if _is_secret_path(resolved):
+        if denial_sink is not None:
+            denial_sink.append({"type": "write", "target": path})
         return f"<error>Write denied: sensitive path {path}</error>"
 
     # 2. Most-specific matching rule wins; deny wins ties
@@ -326,8 +345,12 @@ def check_write(path: str, rules: Rules) -> str | None:
     if allow_match is not None and deny_match is not None:
         if _pattern_specificity(allow_match) > _pattern_specificity(deny_match):
             return None  # allow is more specific (escape hatch for broad deny)
+        if denial_sink is not None:
+            denial_sink.append({"type": "write", "target": path})
         return f"<error>Write denied by denyWrite rule: {deny_match}</error>"
     if deny_match is not None:
+        if denial_sink is not None:
+            denial_sink.append({"type": "write", "target": path})
         return f"<error>Write denied by denyWrite rule: {deny_match}</error>"
     if allow_match is not None:
         return None
@@ -335,22 +358,33 @@ def check_write(path: str, rules: Rules) -> str | None:
     # 3. No rule matches. If an allow_write list exists, this path isn't in it
     # → deny (allow-list semantics). Otherwise default-allow.
     if rules.allow_write:
+        if denial_sink is not None:
+            denial_sink.append({"type": "write", "target": path})
         return f"<error>Write denied (not in allowWrite): {path}</error>"
     return None
 
 
-def check_cmd(command: str, rules: Rules) -> str | None:
+def check_cmd(command: str, rules: Rules,
+              denial_sink: list | None = None) -> str | None:
     """Check if executing a command is allowed.
 
     Returns None if allowed, or an error message if denied.
     Priority: deny rules > shell expansion detection > default allow.
+
+    ``denial_sink``: optional list to receive a structured
+    ``{type:"cmd", target}`` record (target truncated to 80 chars) when the
+    command is denied (see check_read for rationale).
     """
     # 1. Deny rules always win
     if _match_cmd(command, rules.deny_cmd):
+        if denial_sink is not None:
+            denial_sink.append({"type": "cmd", "target": command[:80]})
         return f"<error>Command denied by denyCmd rule: {command[:80]}"
 
     # 2. Block dangerous shell metacharacters that bypass pattern matching
     if _has_shell_expansion(command):
+        if denial_sink is not None:
+            denial_sink.append({"type": "cmd", "target": command[:80]})
         return f"<error>Command denied: contains shell command substitution: {command[:80]}"
 
     # 3. Default: allow

@@ -37,6 +37,7 @@ async def call_llm(
     max_tokens: int | None = None,
     purpose: str = "",
     extra_body: dict | None = None,
+    tools: list[dict] | None = None,
 ) -> StreamResult:
     """One LLM call. Returns the streamed result (text + any tool_calls).
 
@@ -45,9 +46,11 @@ async def call_llm(
       parts — works for vision models).
     - ``model_id`` resolves the model's own provider (api_key/base_url) via
       :func:`load_config`; ``None`` uses ``default_model``.
-    - No tools are passed, so the model can't request tool calls in the normal
-      flow — but ``StreamResult.tool_calls`` is still surfaced for callers that
-      want to opt into a tool loop later.
+    - ``tools`` (optional) exposes function-calling schemas so the model can
+      emit a structured ``tool_calls`` reply. ``None`` (default) passes an
+      empty list — the original single-shot behavior (no tool exposure), and
+      ``StreamResult.tool_calls`` is still surfaced for callers that want to
+      opt into a tool loop later.
     - ``purpose`` is a short label (e.g. "title", "vision", "summary") included
       in diagnostic logs to identify which call_llm invocation this was.
     """
@@ -66,14 +69,15 @@ async def call_llm(
     effective_max = max_tokens or config.max_tokens
     tag = f"[{purpose}]" if purpose else "[call_llm]"
     logger.info(
-        "%s calling model=%s max_tokens=%d input_msgs=%d",
+        "%s calling model=%s max_tokens=%d input_msgs=%d tools=%d",
         tag, config.model, effective_max, len(messages),
+        len(tools) if tools else 0,
     )
 
     t0 = time.monotonic()
     result = await consume_stream_async(
         client, config.model, messages, effective_max,
-        tools=[],  # single-shot: no tools exposed
+        tools=tools if tools is not None else [],  # single-shot by default
         max_retries=config.max_retries,
         extra_body=extra_body,
     )

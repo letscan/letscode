@@ -440,8 +440,32 @@ class CliOutputSubscriber:
             self._on_tool_call(data)
         elif event_type == "tool_call_update":
             self._on_tool_call_update(data)
+        elif event_type == "error":
+            self._on_error(data)
         elif event_type == "result":
             self._on_result(data)
+
+    def _on_error(self, data: dict) -> None:
+        # The only error code the CLI surfaces specially is permission_denied:
+        # print a retry hint with the exact --allow flags the user can pass.
+        # Other error codes (e.g. api_error) are already printed inline by
+        # agent.py before the event is emitted; stay quiet here to avoid
+        # double-printing.
+        if data.get("code") != "permission_denied":
+            return
+        denials = data.get("denials") or []
+        if not denials:
+            return
+        n = len(denials)
+        lines = [f"\n[权限不足] {n} 次工具调用被拒。若需提权重试:"]
+        for d in denials:
+            t = d.get("type")
+            tgt = d.get("target", "")
+            if t and tgt:
+                lines.append(f"  letscode <原命令> --allow {t}:{tgt}")
+        lines.append("当前权限下无法继续完成任务。")
+        sys.stderr.write("\n".join(lines) + "\n")
+        sys.stderr.flush()
 
     def _on_agent_message_chunk(self, data: dict) -> None:
         # Always write text to stdout — this is the main LLM output. Each

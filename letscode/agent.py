@@ -129,6 +129,10 @@ async def run_agent(
                 hub.emit_tool_update(tool_id, status="in_progress")
 
             final_result: ToolResult | None = None
+            # Snapshot the denial-list length before dispatch so we can tell
+            # whether THIS call hit a permission denial (the "last call denied"
+            # trigger). _denials is appended to inside check_* via the runner.
+            n_denials_before = len(tools.denials)
             async for event in tools.execute(tool_name, tc.arguments):
                 if isinstance(event, ToolOutput):
                     if hub:
@@ -138,6 +142,10 @@ async def run_agent(
                         )
                     continue
                 final_result = event
+
+            # Reflect whether this call produced a new denial record — used at
+            # session end for the "last tool call was a denial" trigger.
+            tools._last_call_denied = len(tools.denials) > n_denials_before
 
             if final_result is None:
                 if hub:
@@ -163,6 +171,24 @@ async def run_agent(
         msg_sub.flush()
 
     # --- Session end ---
+    # Passive permission escalation: after the best-effort loop completes
+    # naturally (no mid-loop break), inspect the collected denial records.
+    # Trigger when (a) ≥2 denials accumulated (repeatedly blocked) or
+    # (b) the last tool call was itself a denial (blocked at the finish line).
+    # Either way emit an error event with code="permission_denied" and the
+    # structured denials list. The ACP server intercepts this code to run a
+    # probe + permission popup; pure CLI prints a retry hint. The agent itself
+    # is unaware escalation is possible (no RequestPermission tool, no prompt).
+    # See docs/plan-permission-escalation.md.
+    denials = tools.denials
+    if denials and (len(denials) >= 2 or tools.last_call_denied) and hub:
+        hub.emit_error(
+            f"Permission escalation available: {len(denials)} tool call(s) denied",
+            code="permission_denied",
+            recoverable=True,
+            extra={"denials": list(denials)},
+        )
+
     if hub:
         stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
         hub.on_session_end(stop_reason)
