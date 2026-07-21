@@ -119,7 +119,8 @@ SCHEMA = {
 
 
 async def execute(
-    args: dict[str, Any], *, preset: str = "default", sandbox: bool = True, **_,
+    args: dict[str, Any], *, preset: str = "default", sandbox: bool = True,
+    denial_sink: list | None = None, **_,
 ) -> AsyncGenerator[ToolOutput | ToolResult, None]:
     command = args.get("command", "")
     timeout_ms = args.get("timeout")
@@ -129,7 +130,11 @@ async def execute(
     cwd = os.getcwd()
     cmd = [shell, "-c", command]
 
-    if sandbox and preset in ("safe", "default", "risk") and shutil.which("sandbox-exec"):
+    sandbox_active = (
+        sandbox and preset in ("safe", "default", "risk")
+        and shutil.which("sandbox-exec")
+    )
+    if sandbox_active:
         from ..sandbox import wrap_command
         cmd = wrap_command(cmd, cwd, preset)
 
@@ -177,6 +182,19 @@ async def execute(
         success = proc.returncode == 0
         if not success:
             output += f"\n\n[Exit code: {proc.returncode}]"
+
+        # Permission-denial detection on the combined output (stdout+stderr).
+        # Pure keyword match — independent of exit code. A command chain like
+        # ``denied_write; echo done`` exits 0 while the denied operation's
+        # "Operation not permitted" still appears in the output, so gating on
+        # returncode would miss it. Applied whenever a denial_sink is wired,
+        # regardless of whether the sandbox wrapped this command (the keywords
+        # surface from rules-layer denials and plain OS EPERM too). False
+        # positives are tolerated — the downstream probe + popup filter them.
+        if denial_sink is not None:
+            from ..sandbox import is_likely_sandbox_denied
+            if is_likely_sandbox_denied(output=output):
+                denial_sink.append({"type": "cmd", "target": command[:80]})
 
         yield ToolResult(content=output, success=success)
 

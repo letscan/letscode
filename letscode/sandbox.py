@@ -157,3 +157,53 @@ def wrap_command(cmd: list[str], workspace: str, preset: str = "default") -> lis
         "-D", f"HOME={Path.home()}",
         "--",
     ] + cmd
+
+
+# ---------------------------------------------------------------------------
+# Runtime denial detection (post-command heuristic)
+# ---------------------------------------------------------------------------
+
+# Denial signatures searched for (case-insensitive) in command output. These
+# are the syscall-level error strings the kernel/shell emits when an operation
+# is blocked — by the sandbox at runtime OR by the OS/rules at the tool layer:
+#   - "operation not permitted" : EPERM (macOS Seatbelt intercept)
+#   - "permission denied"       : EACCES
+#   - "read-only file system"   : EROFS (write to a read-only mount)
+#   - "seccomp" / "landlock"    : Linux sandbox backends naming themselves
+#   - "sandbox"                 : broad catch (sandbox-exec / sandboxd)
+#   - "failed to write file"    : apply_patch / tool-level write failure
+# Adapted from codex's is_likely_sandbox_denied (codex-rs/core/src/exec.rs).
+_SANDBOX_DENIED_KEYWORDS: tuple[str, ...] = (
+    "operation not permitted",
+    "permission denied",
+    "read-only file system",
+    "seccomp",
+    "landlock",
+    "sandbox",
+    "failed to write file",
+)
+
+
+def is_likely_sandbox_denied(*, output: str) -> bool:
+    """Heuristic: does this command's output indicate a permission denial?
+
+    There is no deterministic signal for sandbox denial on either platform
+    (``sandbox-exec`` returns 0 itself; the intercepted syscall surfaces inside
+    the child as EPERM, and a command chain like ``bad; echo done`` masks the
+    failure with a trailing success). The exit code is therefore unreliable:
+    a denied write often surfaces as ``Operation not permitted`` in the output
+    while the overall command still exits 0. We classify purely on the presence
+    of a denial keyword in the combined output (stdout+stderr), independent of
+    exit code. Adapted from codex's ``is_likely_sandbox_denied`` (which gates
+    on exit_code != 0) — we drop that gate because the agent frequently issues
+    command chains whose final exit code is 0 even when an intermediate
+    operation was denied.
+
+    False positives (a successful command whose output coincidentally contains
+    one of these strings) are accepted: they are rare, and the downstream
+    probe + user popup tolerates them.
+    """
+    if not output:
+        return False
+    lower = output.lower()
+    return any(kw in lower for kw in _SANDBOX_DENIED_KEYWORDS)

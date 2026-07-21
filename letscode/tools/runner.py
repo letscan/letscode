@@ -190,6 +190,7 @@ class ToolRunner:
         if name == "Bash":
             kwargs["preset"] = self._preset
             kwargs["sandbox"] = self._sandbox
+            kwargs["denial_sink"] = self._denials
         elif name == "Agent":
             kwargs.update(self._agent_config)
 
