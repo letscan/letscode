@@ -154,7 +154,7 @@ class TestEscalationApproveOnce:
             return respawned
 
         async def fake_probe(*a, **kw):
-            return {"type": "write", "target": "/etc/hosts", "reason": "r"}
+            return {"permissions": [{"type": "write", "target": "/etc/hosts"}], "reason": "r"}
 
         class _FakeOutcome:
             outcome = "selected"
@@ -212,7 +212,7 @@ class TestEscalationApproveForSession:
             return respawned
 
         async def fake_probe(*a, **kw):
-            return {"type": "cmd", "target": "npm run dev", "reason": "r"}
+            return {"permissions": [{"type": "cmd", "target": "npm run dev"}], "reason": "r"}
 
         class _FakeOutcome:
             outcome = "selected"
@@ -247,8 +247,240 @@ class TestEscalationApproveForSession:
 
 
 # ---------------------------------------------------------------------------
-# Escalation loop: reject → no respawn, no config
+# Escalation loop: multiple permissions → popup each, mixed approvals
 # ---------------------------------------------------------------------------
+
+class TestEscalationMultiplePermissions:
+    """The probe returns a minimal set of distinct permissions; the server
+    pops up each one and applies the user's per-permission decision. This
+    mirrors the LetsBot delete scenario where the agent tried rm/mv/chmod/
+    python/perl/sudo against the same target — probe collapses to one, but
+    distinct targets each get their own popup."""
+
+    def test_two_permissions_each_popped_individually(self, tmp_path):
+        agent = _make_agent(tmp_path)
+        session = _make_session(str(tmp_path))
+        log_path = tmp_path / ".letscode" / "sessions" / "s1.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("")
+
+        initial = _SubprocessResult(pending_denials=[
+            {"type": "cmd", "target": "rm /a"},
+            {"type": "cmd", "target": "rm /b"},
+        ])
+        respawned = _SubprocessResult(pending_denials=[])
+
+        spawn_cmds: list[list[str]] = []
+        popup_calls: list[dict] = []
+
+        async def fake_run(cmd, sess, sid):
+            spawn_cmds.append(list(cmd))
+            return respawned
+
+        async def fake_probe(*a, **kw):
+            return {"permissions": [
+                {"type": "cmd", "target": "rm /a"},
+                {"type": "cmd", "target": "rm /b"},
+            ], "reason": "delete two files"}
+
+        class _FakeConn:
+            async def request_permission(self, **kw):
+                popup_calls.append(kw)
+                # Approve both.
+                class _O:
+                    outcome = "selected"
+                    option_id = "approve"
+                class _R:
+                    outcome = _O()
+                return _R()
+
+        agent._conn = _FakeConn()
+
+        with patch.object(agent, "_run_agent_subprocess", new=AsyncMock(side_effect=fake_run)), \
+             patch("letscode.acp.permission.probe_permission_request", new=AsyncMock(side_effect=fake_probe)):
+            asyncio.run(agent._escalation_loop(
+                initial, session, session.session_id, log_path, None,
+            ))
+
+        # Two popups fired (one per permission).
+        assert len(popup_calls) == 2
+        # One respawn, carrying both --allow flags.
+        assert len(spawn_cmds) == 1
+        argv = spawn_cmds[0]
+        allow_flags = [argv[i + 1] for i, t in enumerate(argv) if t == "--allow"]
+        assert "cmd:rm /a" in allow_flags
+        assert "cmd:rm /b" in allow_flags
+        assert len(allow_flags) == 2
+
+    def test_mixed_decisions_approved_and_rejected(self, tmp_path):
+        """User approves one permission, rejects the other: only the approved
+        one lands in the respawn --allow flags."""
+        agent = _make_agent(tmp_path)
+        session = _make_session(str(tmp_path))
+        log_path = tmp_path / ".letscode" / "sessions" / "s1.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("")
+
+        initial = _SubprocessResult(pending_denials=[
+            {"type": "cmd", "target": "rm /a"},
+            {"type": "cmd", "target": "sudo rm /b"},
+        ])
+        respawned = _SubprocessResult(pending_denials=[])
+
+        spawn_cmds: list[list[str]] = []
+
+        async def fake_run(cmd, sess, sid):
+            spawn_cmds.append(list(cmd))
+            return respawned
+
+        async def fake_probe(*a, **kw):
+            return {"permissions": [
+                {"type": "cmd", "target": "rm /a"},
+                {"type": "cmd", "target": "sudo rm /b"},
+            ], "reason": "r"}
+
+        class _FakeConn:
+            def __init__(self):
+                self._n = 0
+            async def request_permission(self, **kw):
+                self._n += 1
+                class _O:
+                    pass
+                class _R:
+                    pass
+                r = _R()
+                if self._n == 1:
+                    # First popup (rm /a): approve.
+                    o = _O(); o.outcome = "selected"; o.option_id = "approve"
+                    r.outcome = o
+                else:
+                    # Second popup (sudo rm /b): reject.
+                    o = _O(); o.outcome = "cancelled"
+                    r.outcome = o
+                return r
+
+        agent._conn = _FakeConn()
+
+        with patch.object(agent, "_run_agent_subprocess", new=AsyncMock(side_effect=fake_run)), \
+             patch("letscode.acp.permission.probe_permission_request", new=AsyncMock(side_effect=fake_probe)):
+            asyncio.run(agent._escalation_loop(
+                initial, session, session.session_id, log_path, None,
+            ))
+
+        # Respawn carries only the approved --allow.
+        assert len(spawn_cmds) == 1
+        argv = spawn_cmds[0]
+        allow_flags = [argv[i + 1] for i, t in enumerate(argv) if t == "--allow"]
+        assert allow_flags == ["cmd:rm /a"]
+
+    def test_all_rejected_no_respawn(self, tmp_path):
+        """User rejects every permission: no respawn fires (the best-effort
+        agent's 'I can't' text was already streamed)."""
+        agent = _make_agent(tmp_path)
+        session = _make_session(str(tmp_path))
+        log_path = tmp_path / ".letscode" / "sessions" / "s1.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("")
+
+        initial = _SubprocessResult(pending_denials=[
+            {"type": "cmd", "target": "rm /a"},
+            {"type": "cmd", "target": "rm /b"},
+        ])
+
+        spawn_calls = 0
+
+        async def fake_run(cmd, sess, sid):
+            nonlocal spawn_calls
+            spawn_calls += 1
+            return _SubprocessResult()
+
+        async def fake_probe(*a, **kw):
+            return {"permissions": [
+                {"type": "cmd", "target": "rm /a"},
+                {"type": "cmd", "target": "rm /b"},
+            ], "reason": "r"}
+
+        class _FakeConn:
+            async def request_permission(self, **kw):
+                class _O:
+                    outcome = "cancelled"
+                class _R:
+                    outcome = _O()
+                return _R()
+
+        agent._conn = _FakeConn()
+
+        with patch.object(agent, "_run_agent_subprocess", new=AsyncMock(side_effect=fake_run)), \
+             patch("letscode.acp.permission.probe_permission_request", new=AsyncMock(side_effect=fake_probe)):
+            asyncio.run(agent._escalation_loop(
+                initial, session, session.session_id, log_path, None,
+            ))
+
+        assert spawn_calls == 0
+
+    def test_mixed_allow_once_and_allow_always(self, tmp_path):
+        """One permission approved-for-session (persisted), another approved-once
+        (--allow flag): both mechanisms applied in the same respawn."""
+        agent = _make_agent(tmp_path)
+        session = _make_session(str(tmp_path))
+        log_path = tmp_path / ".letscode" / "sessions" / "s1.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("")
+
+        initial = _SubprocessResult(pending_denials=[
+            {"type": "write", "target": "/a/b/c.txt"},
+            {"type": "cmd", "target": "npm run dev"},
+        ])
+        respawned = _SubprocessResult(pending_denials=[])
+
+        spawn_cmds: list[list[str]] = []
+
+        async def fake_run(cmd, sess, sid):
+            spawn_cmds.append(list(cmd))
+            return respawned
+
+        async def fake_probe(*a, **kw):
+            return {"permissions": [
+                {"type": "write", "target": "/a/b/c.txt"},
+                {"type": "cmd", "target": "npm run dev"},
+            ], "reason": "r"}
+
+        class _FakeConn:
+            def __init__(self):
+                self._n = 0
+            async def request_permission(self, **kw):
+                self._n += 1
+                class _O:
+                    pass
+                class _R:
+                    pass
+                r = _R()
+                if self._n == 1:
+                    # write /a/b/c.txt → approve_for_session (persisted).
+                    o = _O(); o.outcome = "selected"; o.option_id = "approve_for_session"
+                    r.outcome = o
+                else:
+                    # npm run dev → approve (allow-once flag).
+                    o = _O(); o.outcome = "selected"; o.option_id = "approve"
+                    r.outcome = o
+                return r
+
+        agent._conn = _FakeConn()
+
+        with patch.object(agent, "_run_agent_subprocess", new=AsyncMock(side_effect=fake_run)), \
+             patch("letscode.acp.permission.probe_permission_request", new=AsyncMock(side_effect=fake_probe)):
+            asyncio.run(agent._escalation_loop(
+                initial, session, session.session_id, log_path, None,
+            ))
+
+        # Respawn has the allow-once flag for npm, NOT for the write (that one
+        # is picked up from config.<sid>.json).
+        argv = spawn_cmds[0]
+        allow_flags = [argv[i + 1] for i, t in enumerate(argv) if t == "--allow"]
+        assert allow_flags == ["cmd:npm run dev"]
+        # Session config has the generalized write pattern (/a/b/*).
+        cfg = json.loads((tmp_path / ".letscode" / "config.s1.json").read_text())
+        assert cfg == {"allowWrite": ["/a/b/*"]}
 
 class TestEscalationReject:
     def test_reject_no_respawn_no_config(self, tmp_path):
@@ -270,7 +502,7 @@ class TestEscalationReject:
             return _SubprocessResult()
 
         async def fake_probe(*a, **kw):
-            return {"type": "write", "target": "/etc/hosts", "reason": "r"}
+            return {"permissions": [{"type": "write", "target": "/etc/hosts"}], "reason": "r"}
 
         # DeniedOutcome: outcome="cancelled" (no option_id)
         class _FakeOutcome:
@@ -361,7 +593,7 @@ class TestPromptEscalationIntegration:
         run2 = _SubprocessResult(pending_denials=[], stop_reason="end_turn")
 
         async def fake_probe(*a, **kw):
-            return {"type": "write", "target": "/etc/hosts", "reason": "r"}
+            return {"permissions": [{"type": "write", "target": "/etc/hosts"}], "reason": "r"}
 
         class _FakeOutcome:
             outcome = "selected"

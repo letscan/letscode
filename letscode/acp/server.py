@@ -758,18 +758,21 @@ class LetscodeAgent:
     ) -> "_SubprocessResult":
         """Run probe → popup → respawn / allow-always / abort until settled.
 
-        Each iteration: probe the transcript for the precise denied target,
-        ask the user via ``request_permission``, and on approval either respawn
-        with ``--allow <type>:<target>`` (allow-once) or persist a generalized
-        allow-always pattern + respawn (the subprocess reloads it from
-        ``.letscode/config.<session_id>.json`` via its --feed-derived sid).
+        Each iteration: probe the transcript for the minimal set of distinct
+        permissions that would unblock the task, pop up a request for EACH
+        one (the client surfaces them one by one), and on approval respawn
+        with all approved permissions as ``--allow`` flags (allow-once) or
+        persist their generalized allow-always patterns + respawn. The
+        subprocess reloads allow-always from
+        ``.letscode/config.<session_id>.json`` via its --feed-derived sid.
 
         Returns the LAST run's result (which supersedes the initial run when
-        the user approved at least one escalation). If the user rejects or the
-        probe finds no real permission block, the initial run stands.
+        the user approved at least one escalation). If the user rejects all or
+        the probe suppresses (task completed), the initial run stands.
         """
         from .permission import (
             add_session_allow_pattern,
+            generalize_target,
             probe_permission_request,
         )
         from ..feed_util import extract_conversation_text, read_events
@@ -780,7 +783,7 @@ class LetscodeAgent:
                 # No connection (shouldn't happen during prompt()) — bail.
                 break
 
-            # ── Probe: extract the precise permission request ──
+            # ── Probe: extract the minimal permission set ──
             try:
                 events = await asyncio.to_thread(read_events, str(log_path))
                 transcript = extract_conversation_text(events)
@@ -791,62 +794,91 @@ class LetscodeAgent:
             request = await probe_permission_request(
                 run.pending_denials, transcript,
                 model_id=session.model, config_path=self.config_path,
+                cwd=session.cwd,
             )
             if request is None:
-                # Probe says it's not actually a permission block — stop.
+                # Probe suppressed (task completed despite denials) — stop.
                 logger.info(
-                    "Session %s: probe found no permission block; aborting escalation",
+                    "Session %s: probe suppressed popup (task completed); "
+                    "aborting escalation",
                     session_id[:12],
                 )
-                # Clear pending so the caller treats the run as final.
                 run.pending_denials = []
                 break
 
-            # ── Popup: ask the user ──
-            outcome = await self._request_permission_popup(
-                session_id, request,
+            permissions = request.get("permissions") or []
+            reason = request.get("reason", "")
+            if not permissions:
+                run.pending_denials = []
+                break
+
+            logger.info(
+                "Session %s: probe extracted %d permission(s); popping each",
+                session_id[:12], len(permissions),
             )
-            if outcome is None:
-                # Connection issue / no response — treat as reject.
+
+            # ── Popup each permission; collect approvals per-granularity ──
+            # A user can approve some, approve-for-session others, reject the
+            # rest. We group approvals by their option kind so the respawn
+            # applies the right mechanism to each.
+            allow_once_targets: list[dict] = []   # precise --allow flags
+            allow_always_targets: list[dict] = []  # generalized persisted patterns
+            any_responded = False
+            for perm in permissions:
+                outcome = await self._request_permission_popup(
+                    session_id, {
+                        "type": perm["type"],
+                        "target": perm["target"],
+                        "reason": reason,
+                    },
+                )
+                if outcome is None:
+                    # Connection issue — treat as reject for this one but keep
+                    # going so a flaky popup doesn't block the others.
+                    continue
+                any_responded = True
+                option_id = outcome.get("option_id")
+                if option_id == "approve":
+                    allow_once_targets.append(perm)
+                elif option_id == "approve_for_session":
+                    allow_always_targets.append(perm)
+                # option_id == "reject" → drop this permission.
+
+            if not any_responded:
+                # No popup got a response — can't make progress. Stop.
                 run.pending_denials = []
                 break
 
-            option_id = outcome.get("option_id")
-            if option_id == "reject":
-                # User denied — stop. The best-effort agent's "I can't" text
-                # was already streamed before the popup.
-                run.pending_denials = []
-                break
-
-            # ── Approved: respawn ──
-            typ = request["type"]
-            target = request["target"]
-
-            if option_id == "approve_for_session":
-                # Persist a generalized allow-always pattern for this session.
-                from .permission import generalize_target
-                pattern = generalize_target(typ, target)
-                add_session_allow_pattern(session.cwd, session_id, typ, pattern)
+            # ── Apply allow-always (persist before respawn so the subprocess
+            # picks it up from config.<sid>.json when it starts). ──
+            for perm in allow_always_targets:
+                pattern = generalize_target(perm["type"], perm["target"])
+                add_session_allow_pattern(
+                    session.cwd, session_id, perm["type"], pattern,
+                )
                 logger.info(
                     "Session %s: allow-always %s %s -> persisted %r",
-                    session_id[:12], typ, target, pattern,
+                    session_id[:12], perm["type"], perm["target"], pattern,
                 )
 
-            # Build the respawn argv: base + --feed --append (resume context)
-            # + a fixed continuation prompt + --allow for allow-once precision.
-            # The generalized allow-always is picked up by the subprocess from
-            # .letscode/config.<session_id>.json (sid = --feed stem), so it
-            # does not need an argv flag.
+            # If nothing was approved (all rejected), stop — the best-effort
+            # agent's "I can't" text was already streamed before the popup.
+            if not allow_once_targets and not allow_always_targets:
+                run.pending_denials = []
+                break
+
+            # ── Respawn with approved allow-once flags (allow-always is
+            # picked up from config.<sid>.json via the --feed-derived sid). ──
             respawn = self._base_agent_argv(session)
             respawn.extend(["--feed", str(log_path), "--append"])
             respawn.extend(["--text", "权限已更新,请继续"])
-            if option_id == "approve":
-                # Allow-once: precise target only (no generalization).
-                respawn.extend(["--allow", f"{typ}:{target}"])
+            for perm in allow_once_targets:
+                respawn.extend(["--allow", f"{perm['type']}:{perm['target']}"])
 
             logger.info(
-                "Session %s: respawning after permission approval (%s)",
-                session_id[:12], option_id,
+                "Session %s: respawning with %d allow-once + %d allow-always",
+                session_id[:12], len(allow_once_targets),
+                len(allow_always_targets),
             )
             self._current_session_id = session_id
             run = await self._run_agent_subprocess(respawn, session, session_id)
