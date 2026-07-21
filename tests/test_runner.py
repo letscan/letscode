@@ -1,6 +1,9 @@
 """Unit tests for ToolRunner."""
 
 import asyncio
+import json
+import shutil
+
 import pytest
 
 from letscode.rules import Rules
@@ -364,3 +367,109 @@ class TestDenialCollection:
             {"type": "cmd", "target": "rm -rf /a"},
             {"type": "cmd", "target": "dd if=/dev/zero"},
         ]
+
+
+# ---------------------------------------------------------------------------
+# Sandbox-intercept denial detection (runtime heuristic)
+# ---------------------------------------------------------------------------
+
+class TestSandboxDenialDetection:
+    """When a Bash command's output indicates a permission denial
+    (EPERM/EACCES/"Operation not permitted" in stdout+stderr), the failure is
+    recorded as a denial so the escalation trigger can fire. Detection keys on
+    output keywords INDEPENDENT of exit code — a command chain like
+    ``denied_write; echo done`` exits 0 while the denial text is still present.
+
+    These tests run only on macOS where sandbox-exec is available; on other
+    platforms the sandbox path is inactive (no sandbox-exec → no wrap → no
+    runtime intercept possible), so there's nothing to test here.
+    """
+
+    @pytest.mark.skipif(
+        not shutil.which("sandbox-exec"),
+        reason="requires macOS sandbox-exec",
+    )
+    def test_sandbox_blocked_write_recorded(self, tmp_path):
+        # safe preset: writes are denied everywhere. Writing to a short system
+        # path the agent doesn't own → EPERM in stderr.
+        # (Use a short path so the denial target — truncated to 80 chars —
+        # still contains the identifying substring.)
+        runner = ToolRunner(
+            [{"function": {"name": "Bash"}}],
+            {"Bash": _real_bash_executor},
+            preset="safe", sandbox=True,
+        )
+        results = _run(_collect(
+            runner, "Bash",
+            json.dumps({"command": "echo x > /tmp/letscode_deny_marker"}),
+        ))
+        # And a denial was recorded with the command as the target.
+        assert any(
+            d.get("type") == "cmd" and "letscode_deny_marker" in d.get("target", "")
+            for d in runner.denials
+        )
+
+    @pytest.mark.skipif(
+        not shutil.which("sandbox-exec"),
+        reason="requires macOS sandbox-exec",
+    )
+    def test_denied_write_masked_by_trailing_echo_still_recorded(self, tmp_path):
+        """The regression from the LetsBot bug report: the agent issues a
+        chain whose denied write is masked by a trailing ``echo "Exit code:
+        $?"``. The chain exits 0 (the echo succeeds), but the output still
+        contains "operation not permitted". Must be recorded regardless of
+        the overall exit code."""
+        runner = ToolRunner(
+            [{"function": {"name": "Bash"}}],
+            {"Bash": _real_bash_executor},
+            preset="safe", sandbox=True,
+        )
+        # Write to ~/ (denied under safe preset), then echo masks the exit.
+        cmd = (
+            'echo test > ~/letscode_masked_deny 2>&1; '
+            'echo "Exit code: $?"'
+        )
+        _run(_collect(runner, "Bash", json.dumps({"command": cmd})))
+        # Denial recorded even though the chain exits 0.
+        assert any(
+            d.get("type") == "cmd" and "letscode_masked_deny" in d.get("target", "")
+            for d in runner.denials
+        )
+
+    @pytest.mark.skipif(
+        not shutil.which("sandbox-exec"),
+        reason="requires macOS sandbox-exec",
+    )
+    def test_sandbox_allowed_command_not_recorded(self, tmp_path):
+        # A command that succeeds under the sandbox with no denial keyword in
+        # its output must not be flagged.
+        runner = ToolRunner(
+            [{"function": {"name": "Bash"}}],
+            {"Bash": _real_bash_executor},
+            preset="default", sandbox=True,
+        )
+        _run(_collect(runner, "Bash", json.dumps({"command": "echo hello"})))
+        assert runner.denials == []
+
+    @pytest.mark.skipif(
+        not shutil.which("sandbox-exec"),
+        reason="requires macOS sandbox-exec",
+    )
+    def test_ordinary_failure_not_recorded(self, tmp_path):
+        # A non-sandbox failure (exit 127 command not found) with no denial
+        # keyword must NOT be recorded as a denial.
+        runner = ToolRunner(
+            [{"function": {"name": "Bash"}}],
+            {"Bash": _real_bash_executor},
+            preset="default", sandbox=True,
+        )
+        _run(_collect(runner, "Bash",
+                      json.dumps({"command": "this_cmd_does_not_exist_xyz"})))
+        assert runner.denials == []
+
+
+async def _real_bash_executor(args, **kwargs):
+    """Real bash.execute passthrough for sandbox integration tests."""
+    from letscode.tools.bash import execute as _bash_execute
+    async for event in _bash_execute(args, **kwargs):
+        yield event
