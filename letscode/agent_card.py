@@ -36,6 +36,8 @@ class AgentCard:
     mcp_servers: list[str] | None = None
     rules: dict | None = None
     preset: str | None = None
+    on_agent_start: str | None = None
+    on_agent_end: str | None = None
     body: str = ""
 
 
@@ -54,6 +56,8 @@ class CardOverrides:
     mcp_servers: dict = field(default_factory=dict)
     rules_raw: dict | None = None
     preset: str | None = None
+    on_agent_start: str | None = None
+    on_agent_end: str | None = None
     system_prompt: str | None = None
     tool_allowlist: set[str] | None = None
     skill_allowlist: set[str] | None = None
@@ -190,6 +194,10 @@ def _parse_card(text: str) -> AgentCard:
         card.rules = data["rules"]
     if isinstance(data.get("preset"), str):
         card.preset = data["preset"]
+    if isinstance(data.get("onAgentStart"), str):
+        card.on_agent_start = data["onAgentStart"]
+    if isinstance(data.get("onAgentEnd"), str):
+        card.on_agent_end = data["onAgentEnd"]
     return card
 
 
@@ -261,6 +269,8 @@ def apply_card(
             mcp_servers=dict(mcp_servers),
             rules_raw=config.rules,
             preset=None,
+            on_agent_start=None,
+            on_agent_end=None,
             system_prompt=None,
             tool_allowlist=None,
             skill_allowlist=None,
@@ -277,6 +287,8 @@ def apply_card(
         mcp_servers=filtered,
         rules_raw=_merge_rules_raw(config.rules, card.rules),
         preset=card.preset,
+        on_agent_start=card.on_agent_start,
+        on_agent_end=card.on_agent_end,
         system_prompt=card.body or None,
         tool_allowlist=set(card.tools) if card.tools is not None else None,
         skill_allowlist=set(card.skills) if card.skills is not None else None,

@@ -166,13 +166,16 @@ rules:
 You are a code review specialist. ...
 ```
 
-**Frontmatter fields** (7): `name`/`description` (metadata), `tools` (whitelist over built-in + `mcp__`-prefixed tools), `skills` (whitelist enforced at Skill execution), `mcp_servers` (whitelist over configured servers), `preset` (sandbox preset), `rules` (camelCase, deep-merged with config.rules). Unset whitelist fields mean "no restriction".
+**Frontmatter fields** (9): `name`/`description` (metadata), `tools` (whitelist over built-in + `mcp__`-prefixed tools), `skills` (whitelist enforced at Skill execution), `mcp_servers` (whitelist over configured servers), `preset` (sandbox preset), `rules` (camelCase, deep-merged with config.rules), `onAgentStart` (script path run before the agent loop), `onAgentEnd` (script path run after the agent loop). Unset whitelist fields mean "no restriction".
 
-**Single merge point**: `apply_card(config, mcp_servers, card) -> CardOverrides` merges the card onto loaded config once, up front in `cli.py`. `card=None` returns all-default overrides, so the no-card path needs no branching. The 7 card fields do not overlap with existing CLI knobs (`--model`/`--effort`/`--no-sandbox`), except `preset` (`--preset` > card.preset > config.preset) and `mcp_servers` (`--no-mcp` zeros out after the card filter).
+**Single merge point**: `apply_card(config, mcp_servers, card) -> CardOverrides` merges the card onto loaded config once, up front in `cli.py`. `card=None` returns all-default overrides, so the no-card path needs no branching. The card fields do not overlap with existing CLI knobs (`--model`/`--effort`/`--no-sandbox`), except `preset` (`--preset` > card.preset > config.preset) and `mcp_servers` (`--no-mcp` zeros out after the card filter).
 
 **Priority**: CLI flags > AgentCard > `config.json`, per-field independent.
 
 **Built-in cards** ship in `letscode/builtin_agents/` (Explore, Plan, Review, SetupZed), read via `importlib.resources`. A project `agents/<Name>.md` with the same stem overrides a built-in (case-insensitive). `--list-agents` shows all available cards with a `(built-in)` tag. No `--as` → no card → `build_system_prompt(model)` directly (no template layer).
+
+### Agent Lifecycle Hooks (`hooks.py`)
+A card may declare `onAgentStart` and/or `onAgentEnd` — paths to shell scripts the harness (`agent.py`) runs at the boundaries of a **big turn** (one complete `run_agent` invocation). `onAgentStart` runs once before the agent loop; its stdout is injected as a user message the LLM sees on its first turn. `onAgentEnd` runs once after the loop completes; its stdout is shown to the user, and a non-zero exit bumps the run's exit code to 1. Both hooks receive a JSON summary on stdin (`{"turn": N, "tool_calls": [{"name", "success"}, ...]}`). Scripts run in the project cwd under the card's sandbox preset. If a declared script path doesn't exist, the hook is silently skipped. This enables non-invasive orchestration: a card's `onAgentEnd` script can chain to the next agent (`letscode --as Worker --state ...`), branch (test pass → stop, fail → retry), or parallelize (fork multiple sub-agents) — all in plain shell, without harness-level control-flow logic.
 
 ### Template Variables (`prompt_renderer.py`)
 AgentCard bodies may reference three predefined variables, rendered only on the `--as` path (the no-card path skips rendering entirely):

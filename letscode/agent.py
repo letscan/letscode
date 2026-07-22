@@ -23,10 +23,18 @@ async def run_agent(
     feed_path: str | None = None,
     tool_runner: ToolRunner | None = None,
     msg_sub: MessageSubscriber | None = None,
+    on_agent_start: str | None = None,
+    on_agent_end: str | None = None,
 ) -> int:
     """Run the agent loop until the LLM stops making tool calls.
 
     Returns exit code: 0 for success, 1 for error.
+
+    ``on_agent_start`` / ``on_agent_end``: when set (from an AgentCard's
+    onAgentStart/onAgentEnd), the harness runs the referenced script before
+    the loop begins / after it completes. onAgentStart's stdout is injected as
+    context for the first LLM turn. onAgentEnd's stdout is shown to the user.
+    See letscode/hooks.py.
     """
     hub = get_hub()
     tools = tool_runner or ToolRunner([], {})
@@ -67,9 +75,39 @@ async def run_agent(
         )
         hub.emit_prompt(prompt_blocks=prompt_blocks)
 
+    # ── onAgentStart hook ──
+    # Runs once before the loop. Return-code contract:
+    #   0 → stdout injected as user message (LLM sees it on turn 1)
+    #   2 → abort: skip the agent loop entirely, stdout is the error message
+    #   other non-zero → unexpected failure, warn but continue
+    if on_agent_start:
+        from .hooks import run_hook, serialize_run
+        hook_result = run_hook(
+            on_agent_start, serialize_run(0, []),
+            cwd=os.getcwd(), preset=config.preset, sandbox=config.sandbox,
+        )
+        if not hook_result.skipped:
+            if hook_result.aborted:
+                # Script explicitly aborted — don't run the agent loop.
+                msg = hook_result.stdout or "(no message)"
+                print(f"\n[onAgentStart aborted: {msg}]", file=sys.stderr)
+                if hub:
+                    hub.emit_error(msg, code="hook_abort", recoverable=False)
+                return 1
+            if hook_result.ok and hook_result.stdout:
+                msg_sub.messages.append({
+                    "role": "user",
+                    "content": f"[onAgentStart]\n{hook_result.stdout}",
+                })
+            elif not hook_result.ok:
+                # Unexpected failure — warn but continue (best-effort).
+                print(f"\n[onAgentStart exited {hook_result.returncode}]",
+                      file=sys.stderr)
+
     # --- Loop ---
     turn = 0
     had_error = False
+    all_tool_calls: list[dict] = []  # accumulated across all turns for onAgentEnd
 
     while True:
         if max_turns is not None and turn >= max_turns:
@@ -115,6 +153,7 @@ async def run_agent(
             break
 
         # Execute tools — events drive msg_sub state
+        turn_tool_calls: list[dict] = []
         for tc in tool_calls:
             tool_name = tc.name
             tool_id = tc.id
@@ -153,6 +192,7 @@ async def run_agent(
                         tool_id, status="failed",
                         raw_output="<error>Tool produced no result</error>",
                     )
+                turn_tool_calls.append({"name": tool_name, "success": False})
                 continue
 
             result = final_result.content
@@ -166,9 +206,11 @@ async def run_agent(
             # only fall back to reconstructing from stream chunks when absent.
             if hub:
                 hub.emit_tool_update(tool_id, status=status, raw_output=result)
+            turn_tool_calls.append({"name": tool_name, "success": success})
 
         # Flush msg_sub to incorporate assistant + tool messages into its list
         msg_sub.flush()
+        all_tool_calls.extend(turn_tool_calls)
 
     # --- Session end ---
     # Passive permission escalation: after the best-effort loop completes
@@ -192,5 +234,35 @@ async def run_agent(
     if hub:
         stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
         hub.on_session_end(stop_reason)
+
+    # ── onAgentEnd hook ──
+    # Runs once after the loop completes. Return-code contract:
+    #   0 → stdout injected as user message (shown to user)
+    #   2 → abort: stdout is the error reason, run exit code → 1
+    #   other non-zero → unexpected failure, warn, run exit code → 1
+    if on_agent_end:
+        from .hooks import run_hook, serialize_run
+        hook_result = run_hook(
+            on_agent_end, serialize_run(turn, all_tool_calls),
+            cwd=os.getcwd(), preset=config.preset, sandbox=config.sandbox,
+        )
+        if not hook_result.skipped:
+            if hook_result.aborted:
+                msg = hook_result.stdout or "(no message)"
+                print(f"\n[onAgentEnd aborted: {msg}]", file=sys.stderr)
+                if hub:
+                    hub.emit_error(msg, code="hook_abort", recoverable=False)
+                had_error = True
+            elif hook_result.ok and hook_result.stdout:
+                if hub:
+                    hub.emit_agent_message_chunk(
+                        f"\n[onAgentEnd] {hook_result.stdout}\n"
+                    )
+                else:
+                    print(f"\n[onAgentEnd] {hook_result.stdout}")
+            elif not hook_result.ok:
+                print(f"\n[onAgentEnd exited {hook_result.returncode}]",
+                      file=sys.stderr)
+                had_error = True
 
     return 1 if had_error else 0

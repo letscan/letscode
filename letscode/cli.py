@@ -288,6 +288,7 @@ async def _async_main(args):
                     "preset": config.preset,
                     "sandbox": config.sandbox,
                     "verbose": args.verbose,
+                    "scan_dirs": scan_dirs,
                 },
                 tool_allowlist=overrides.tool_allowlist,
                 skill_allowlist=overrides.skill_allowlist,
@@ -336,6 +337,8 @@ async def _async_main(args):
                     feed_path=args.feed,
                     tool_runner=tool_runner,
                     msg_sub=msg_sub,
+                    on_agent_start=overrides.on_agent_start,
+                    on_agent_end=overrides.on_agent_end,
                 )
             except asyncio.CancelledError:
                 # Ctrl-C: the task was cancelled mid-run. Acknowledge immediately

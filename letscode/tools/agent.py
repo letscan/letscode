@@ -14,10 +14,12 @@ SCHEMA = {
             "Available agent types and the tools they have access to:\n"
             "- general-purpose: General-purpose agent for researching complex questions, "
             "searching for code, and executing multi-step tasks. (Tools: *)\n"
-            "- Explore: Fast agent specialized for exploring codebases. Use this when you "
+            "- Explore: Fast read-only codebase exploration specialist. Use this when you "
             "need to quickly find files by patterns, search code for keywords, or answer "
-            "questions about the codebase. Read-only — cannot modify files. "
-            "(Tools: Bash, Read, Glob, Grep)\n\n"
+            "questions about the codebase. (Tools: Read, Glob, Grep, Agent)\n"
+            "- Plan: Read-and-plan specialist; investigates then writes a plan file. "
+            "Read-only on source code. (Tools: Read, Glob, Grep, Agent, Write)\n"
+            "- Review: Read-only code review specialist. (Tools: Read, Glob, Grep, Agent)\n\n"
             "Usage notes:\n"
             "- Always include a short description summarizing what the agent will do\n"
             "- Launch multiple agents concurrently whenever possible, to maximize performance\n"
@@ -25,7 +27,7 @@ SCHEMA = {
             "result is not visible to the user — you should summarize it for the user.\n"
             "- Clearly tell the agent whether you expect it to write code or just to do "
             "research (search, file reads, web fetches, etc.), since it is not aware of "
-            "the user's intent\n"
+            "your intent\n"
             "- For simple, directed searches use Glob/Grep directly. Only use Agent for "
             "broader exploration requiring 3+ queries."
         ),
@@ -43,10 +45,15 @@ SCHEMA = {
                 "subagent_type": {
                     "type": "string",
                     "description": (
-                        "Type of specialized agent to use. "
-                        "'general-purpose' for full capabilities, "
-                        "'Explore' for fast read-only codebase exploration."
+                        "Type of specialized agent to use (loads the matching agent card "
+                        "for its system prompt, tools, and permissions). "
+                        "'general-purpose' for full default capabilities, or a named "
+                        "specialist: Explore, Plan, Review."
                     ),
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Maximum agent loop turns (default: 30).",
                 },
             },
             "required": ["description", "prompt"],
@@ -62,19 +69,29 @@ def execute(
     preset: str = "default",
     sandbox: bool = True,
     verbose: bool = False,
+    scan_dirs: list[str] | None = None,
     **_,
 ) -> str:
     """Spawn letscode as a subprocess for sub-agent delegation."""
     prompt = args.get("prompt", "")
-    max_turns = 30
+    subagent_type = args.get("subagent_type")
+    max_turns = args.get("max_turns", 30)
     timeout = 300
 
     cmd = [sys.executable, "-m", "letscode", "--max-turns", str(max_turns), "--no-mcp"]
     if config_path:
         cmd.extend(["--config", config_path])
+    if subagent_type:
+        cmd.extend(["--as", subagent_type])
+    for d in (scan_dirs or []):
+        cmd.extend(["--add-scan-dir", d])
     if verbose:
         cmd.append("--verbose")
-    if preset:
+    # Forward --preset ONLY when not loading a sub-agent card. When a card is
+    # loaded (--as), the card's own preset should take effect — otherwise the
+    # orchestrator's preset (e.g. safe) would override the card's (e.g.
+    # default), silently denying the sub-agent's write tools.
+    if preset and not subagent_type:
         cmd.extend(["--preset", preset])
     if not sandbox:
         cmd.append("--no-sandbox")
