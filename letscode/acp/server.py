@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import acp.helpers as h
 from acp import PROTOCOL_VERSION, Client, run_agent
@@ -49,6 +49,33 @@ from .session import Session, create_session, list_sessions, load_session_meta, 
 logger = logging.getLogger("letscode-acp")
 
 _DEFAULT_MAX_TURNS = 30
+
+
+async def _read_jsonl_lines(stream: asyncio.StreamReader) -> AsyncGenerator[str, None]:
+    """Yield newline-delimited lines from *stream* with no per-line size cap.
+
+    ``async for line in stream`` uses StreamReader.readline, which enforces a
+    64 KiB limit and raises LimitOverrunError on larger lines. This helper
+    reads fixed-size chunks and splits on b"\\n" manually, so arbitrarily long
+    JSONL lines are handled without a ceiling. The upstream EventHub
+    externalizes large tool results, but other event types (e.g. a large skill
+    prompt in user_message_chunk) can still produce long lines — this is the
+    defensive backstop that makes the consumer side unconditionally safe.
+    """
+    buf = bytearray()
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            if buf:
+                yield buf.decode("utf-8", errors="replace")
+            return
+        buf += chunk
+        while True:
+            nl = buf.find(b"\n")
+            if nl < 0:
+                break
+            yield buf[:nl].decode("utf-8", errors="replace")
+            del buf[:nl + 1]
 
 
 @dataclass
@@ -659,8 +686,8 @@ class LetscodeAgent:
 
             pending_tool_inputs: dict[str, dict] = {}
 
-            async for line in self._agent_proc.stdout:
-                text = line.decode("utf-8", errors="replace").strip()
+            async for text in _read_jsonl_lines(self._agent_proc.stdout):
+                text = text.strip()
                 if not text:
                     continue
                 try:

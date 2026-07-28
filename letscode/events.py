@@ -17,10 +17,17 @@ from .tools._display import format_call, format_result
 # Shared persistence helpers
 # ---------------------------------------------------------------------------
 
-def _write_result_file(log_path: Path, tool_call_id: str, result: str) -> Path:
-    results_dir = log_path.parent / (log_path.stem + "_results")
-    results_dir.mkdir(parents=True, exist_ok=True)
-    result_path = results_dir / f"{tool_call_id}.txt"
+def _write_result_file(
+    dest_dir: Path, tool_call_id: str, result: str,
+) -> Path:
+    """Write *result* to ``dest_dir/{tool_call_id}.txt`` and return the path.
+
+    *dest_dir* is the directory to write into (created if missing). The path
+    is resolved to absolute so the persisted reference embedded in the
+    ``<persisted-output>`` block resolves regardless of cwd.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    result_path = (dest_dir / f"{tool_call_id}.txt").resolve()
     result_path.write_text(result, encoding="utf-8")
     return result_path
 
@@ -89,11 +96,59 @@ class EventHub:
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         }
+        # Upstream externalization: when enabled, large tool results are
+        # persisted to _cache_dir and replaced with a preview+path reference
+        # BEFORE fan-out to subscribers. This is the single point that keeps
+        # every downstream consumer (Stream/Feed/Message/Log) from receiving
+        # oversized payloads — fixing the root cause of JSONL lines exceeding
+        # asyncio's StreamReader single-line limit.
+        self._cache_dir: Path | None = None
+        self._externalize: bool = False
+
+    def enable_externalization(self, cache_dir: Path) -> None:
+        """Enable upstream externalization of large tool results.
+
+        Once called, ``emit("tool_call_update", ...)`` with a ``rawOutput``
+        exceeding ``RESULT_THRESHOLD`` is persisted to *cache_dir* and the
+        ``rawOutput`` field is replaced with a ``<persisted-output>`` preview
+        reference before any subscriber sees it. Off by default so feed-replay
+        MessageSubscriber instances (which replay already-externalized logs)
+        don't double-externalize.
+        """
+        self._cache_dir = cache_dir.resolve()
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._externalize = True
 
     def subscribe(self, handler: Callable[[str, dict], None]) -> None:
         self._subscribers.append(handler)
 
+    def _maybe_externalize(self, event_type: str, data: dict) -> dict:
+        """Return *data*, externalizing large ``rawOutput`` if applicable.
+
+        Only terminal ``tool_call_update`` events (``completed``/``failed``)
+        with a ``rawOutput`` exceeding ``RESULT_THRESHOLD`` are externalized.
+        Streaming chunks (``status=None``) and all other event types pass
+        through unchanged. Returns a shallow copy when externalized so the
+        caller's dict is never mutated.
+        """
+        if not self._externalize or self._cache_dir is None:
+            return data
+        if event_type != "tool_call_update":
+            return data
+        status = data.get("status")
+        if status not in ("completed", "failed"):
+            return data
+        raw = data.get("rawOutput")
+        if not raw or len(raw) <= RESULT_THRESHOLD:
+            return data
+        tid = data.get("toolCallId", "unknown")
+        result_path = _write_result_file(self._cache_dir, tid, raw)
+        data = dict(data)
+        data["rawOutput"] = _make_persisted_ref(raw, result_path)
+        return data
+
     def emit(self, event_type: str, data: dict) -> None:
+        data = self._maybe_externalize(event_type, data)
         for handler in self._subscribers:
             handler(event_type, data)
 
@@ -397,8 +452,6 @@ class FeedOutputSubscriber:
             if buf and buf.all_lines and "rawOutput" not in data:
                 data = dict(data)
                 data["rawOutput"] = buf.merged
-            if self._mode == "json":
-                data = self._maybe_persist(data)
 
         if self._mode == "json":
             self._write_json(event_type, data)
@@ -452,7 +505,11 @@ class FeedOutputSubscriber:
     def _maybe_persist(self, data: dict) -> dict:
         raw = data.get("rawOutput")
         if raw and len(raw) > RESULT_THRESHOLD:
-            result_path = _write_result_file(self._log_path, data["toolCallId"], raw)
+            # Legacy: results_dir derived from the feed file stem. No longer
+            # called in production (upstream EventHub externalizes first), but
+            # kept for correctness if re-enabled.
+            results_dir = self._log_path.parent / (self._log_path.stem + "_results")
+            result_path = _write_result_file(results_dir, data["toolCallId"], raw)
             data = dict(data)
             data["rawOutput"] = _make_persisted_ref(raw, result_path)
         return data

@@ -50,15 +50,21 @@ def _make_session(cwd: str, session_id: str = "s1") -> Session:
 # ---------------------------------------------------------------------------
 
 class _AsyncLineIter:
-    """Async iterator over a list of line strings (mimics subprocess stdout)."""
+    """Async stream stand-in mimicking asyncio.StreamReader.
+
+    Supports both ``read(n)`` (used by _read_jsonl_lines) and async iteration
+    (legacy). Stores complete lines and feeds them as byte chunks.
+    """
     def __init__(self, lines):
-        self._lines = list(lines)
-    def __aiter__(self):
-        return self
-    async def __anext__(self):
-        if self._lines:
-            return self._lines.pop(0).encode()
-        raise StopAsyncIteration
+        self._buf = b"".join(
+            l if isinstance(l, bytes) else l.encode() for l in lines
+        )
+    async def read(self, n: int = -1) -> bytes:
+        if n < 0 or n >= len(self._buf):
+            chunk, self._buf = self._buf, b""
+            return chunk
+        chunk, self._buf = self._buf[:n], self._buf[n:]
+        return chunk
 
 
 class _FakeProc:

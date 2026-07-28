@@ -188,6 +188,13 @@ async def _async_main(args):
         hub = EventHub()
         set_hub(hub)
 
+        # Enable upstream externalization: large tool results are persisted to
+        # .letscode/cache/ and replaced with a preview+path reference before
+        # any subscriber sees them. This keeps every downstream consumer
+        # (Stream/Feed/Message/Log) from receiving oversized payloads.
+        cache_dir = Path(os.getcwd()) / ".letscode" / "cache"
+        hub.enable_externalization(cache_dir)
+
         # LogSubscriber: always-on 1:1 raw event log
         log_dir = Path(os.getcwd()) / ".letscode" / "logs"
         log_sub = LogSubscriber(log_dir)

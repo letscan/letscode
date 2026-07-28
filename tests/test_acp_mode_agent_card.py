@@ -271,15 +271,18 @@ class TestPromptArgv:
         captured: list[list[str]] = []
 
         class _FakeStream:
+            """Mimics asyncio.StreamReader: read(n) returns byte chunks."""
             def __init__(self, lines):
-                self._lines = lines
+                self._buf = b"".join(
+                    l if isinstance(l, bytes) else l.encode() for l in lines
+                )
 
-            async def _aiter(self):
-                for line in self._lines:
-                    yield line
-
-            def __aiter__(self):
-                return self._aiter()
+            async def read(self, n: int = -1) -> bytes:
+                if n < 0 or n >= len(self._buf):
+                    chunk, self._buf = self._buf, b""
+                    return chunk
+                chunk, self._buf = self._buf[:n], self._buf[n:]
+                return chunk
 
         class _FakeProc:
             def __init__(self):

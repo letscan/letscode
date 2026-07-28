@@ -78,10 +78,14 @@ class StreamBuffer:
 
 
 def persist_result(log_stem: Path, tool_call_id: str, result: str) -> str:
-    """Persist a large tool result to disk. Returns the reference message."""
+    """Persist a large tool result to disk. Returns the reference message.
+
+    No longer called in production (upstream EventHub externalizes first); kept
+    for signature compatibility and potential legacy use.
+    """
     results_dir = log_stem.parent / (log_stem.stem + "_results")
     results_dir.mkdir(parents=True, exist_ok=True)
-    result_path = results_dir / f"{tool_call_id}.txt"
+    result_path = (results_dir / f"{tool_call_id}.txt").resolve()
     result_path.write_text(result, encoding="utf-8")
 
     preview_limit = 2000
@@ -388,14 +392,12 @@ class MessageSubscriber:
             tool = self._pending_tools[tid]
             result = tool.get("result", "")
 
-            # Persist large results (live mode only)
-            if self._log_stem and len(result) > RESULT_THRESHOLD:
-                result = persist_result(self._log_stem, tid, result)
-
-            # Tool result goes to the LLM as-is. For Skill, the return value
-            # is already a concise label ("Loaded skill X from <path>"); the
-            # full skill content reaches the LLM via a separate user message
-            # injected by the user_message_chunk event (no duplication).
+            # Large-result externalization is handled upstream by EventHub
+            # (enable_externalization). By the time result reaches here it is
+            # already a <persisted-output> preview reference (if it was large).
+            # The legacy persist_result call is removed — upstream is the
+            # single externalization point, eliminating per-subscriber logic
+            # duplication and ensuring all consumers see the same payload.
             self.messages.append({
                 "role": "tool",
                 "tool_call_id": tid,
