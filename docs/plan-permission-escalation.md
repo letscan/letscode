@@ -1,6 +1,6 @@
 # 方案:权限被动升级(harness 判定 + probe 提取 + server 驱动)
 
-> 状态:**待实现**。来源:LetsBot 下游功能请求第二项(LETCODE_FEATURE_REQUEST.md)。
+> 状态:**待实现**。来源:LetsBot 下游功能请求第二项(LETSCODE_FEATURE_REQUEST.md)。
 > 核心思路(下游提出):不做"工具调用即弹窗"的主动拦截(打断多、体验差);而是让 agent 在沙箱内尽最大努力,仅在确实无法完成时,**CLI 子进程退出并报特殊错误** → ACP 层拦截 → probe 确认 + 提取权限请求 → 弹窗 → 用户批准后 server 用 `--allow` respawn 续跑。
 
 ---
