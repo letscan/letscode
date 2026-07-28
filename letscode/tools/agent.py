@@ -70,6 +70,7 @@ def execute(
     sandbox: bool = True,
     verbose: bool = False,
     scan_dirs: list[str] | None = None,
+    state_file: str | None = None,
     **_,
 ) -> str:
     """Spawn letscode as a subprocess for sub-agent delegation."""
@@ -85,6 +86,8 @@ def execute(
         cmd.extend(["--as", subagent_type])
     for d in (scan_dirs or []):
         cmd.extend(["--add-scan-dir", d])
+    if state_file:
+        cmd.extend(["--state", state_file])
     if verbose:
         cmd.append("--verbose")
     # Forward --preset ONLY when not loading a sub-agent card. When a card is

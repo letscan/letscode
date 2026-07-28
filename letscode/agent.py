@@ -25,6 +25,8 @@ async def run_agent(
     msg_sub: MessageSubscriber | None = None,
     on_agent_start: str | None = None,
     on_agent_end: str | None = None,
+    state_file: str | None = None,
+    config_path: str | None = None,
 ) -> int:
     """Run the agent loop until the LLM stops making tool calls.
 
@@ -35,6 +37,16 @@ async def run_agent(
     the loop begins / after it completes. onAgentStart's stdout is injected as
     context for the first LLM turn. onAgentEnd's stdout is shown to the user.
     See letscode/hooks.py.
+
+    ``state_file``: path to a shared state JSON file. When set, it's exported
+    as LETSCODE_STATE env var for hook scripts and forwarded to spawned
+    sub-agents via the Agent tool.
+
+    ``config_path``: the config file in use (``--config`` value). When set,
+    exported as LETSCODE_CONFIG for hook scripts so they can re-invoke letscode
+    (e.g. DevHard's onAgentEnd chains to Worker) with the same model/API.
+    LETSCODE_PYTHON (this interpreter, ``sys.executable``) is always exported so
+    hooks run pytest/letscode via the same venv that has them installed.
     """
     hub = get_hub()
     tools = tool_runner or ToolRunner([], {})
@@ -80,11 +92,31 @@ async def run_agent(
     #   0 → stdout injected as user message (LLM sees it on turn 1)
     #   2 → abort: skip the agent loop entirely, stdout is the error message
     #   other non-zero → unexpected failure, warn but continue
+    # Build the hook environment (shared by onAgentStart and onAgentEnd):
+    #   LETSCODE_STATE  — shared state file path (--state), for multi-run loops
+    #   LETSCODE_CONFIG — config file in use (--config), so a hook that re-spawns
+    #                    letscode (e.g. DevHard chaining to Worker) gets the same
+    #                    model/API rather than a modelless no-op.
+    #   LETSCODE_PYTHON — this interpreter (sys.executable), so hooks run
+    #                    `python -m pytest` / `python -m letscode` in the venv
+    #                    that actually has them installed (the bare `pytest` /
+    #                    `letscode` binaries are often absent from the hook's
+    #                    PATH). Always set.
+    # Keep hook_env=None when nothing is set, so subprocess.run inherits
+    # os.environ unchanged (the no-hook / no-state common path).
+    hook_env: dict[str, str] | None = None
+    if state_file or config_path:
+        hook_env = {"LETSCODE_PYTHON": sys.executable}
+        if state_file:
+            hook_env["LETSCODE_STATE"] = state_file
+        if config_path:
+            hook_env["LETSCODE_CONFIG"] = config_path
     if on_agent_start:
         from .hooks import run_hook, serialize_run
         hook_result = run_hook(
             on_agent_start, serialize_run(0, []),
             cwd=os.getcwd(), preset=config.preset, sandbox=config.sandbox,
+            env=hook_env,
         )
         if not hook_result.skipped:
             if hook_result.aborted:
@@ -231,20 +263,40 @@ async def run_agent(
             extra={"denials": list(denials)},
         )
 
-    if hub:
-        stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
-        hub.on_session_end(stop_reason)
-
     # ── onAgentEnd hook ──
-    # Runs once after the loop completes. Return-code contract:
+    # Runs once after the loop completes, BEFORE the session/result event is
+    # emitted. Order matters: on_session_end() closes the event log (and feed)
+    # subscribers, so the hook's own output (emit_agent_message_chunk /
+    # emit_error below) must be written while they are still open — otherwise
+    # writing to a closed log file raises "ValueError: I/O operation on closed
+    # file". The result event is therefore emitted last (after the hook).
+    #
+    # Return-code contract:
     #   0 → stdout injected as user message (shown to user)
     #   2 → abort: stdout is the error reason, run exit code → 1
     #   other non-zero → unexpected failure, warn, run exit code → 1
     if on_agent_end:
         from .hooks import run_hook, serialize_run
+        # onAgentEnd hooks drive sub-agents and build tools (e.g. DevHard's
+        # devhard_loop.sh spawns Tester/Worker and runs swift build / pytest).
+        # We run the hook WITHOUT the outer sandbox-exec wrapper (sandbox=False)
+        # for two reasons:
+        #   1. macOS Seatbelt does not allow nested sandbox_apply: build tools
+        #      like swiftc internally call sandbox_apply, which fails with
+        #      "Operation not permitted" when already inside a sandbox-exec
+        #      profile — so swift build / xcodebuild can NEVER work under an
+        #      outer sandbox, no matter how permissive the profile is.
+        #   2. The hook spawns letscode sub-agents that apply their OWN card
+        #      sandbox (e.g. Worker preset=default). The outer sandbox is
+        #      redundant and interferes with those inner sandboxes.
+        # Security is maintained by: sub-agents applying their own card presets,
+        # the rules engine, and the secrets-deny baseline in the config.
+        # The timeout is generous (30 min): the hook drives a full multi-agent
+        # cycle (spawn Tester + Worker + up to 5 verify-fix iterations).
         hook_result = run_hook(
             on_agent_end, serialize_run(turn, all_tool_calls),
-            cwd=os.getcwd(), preset=config.preset, sandbox=config.sandbox,
+            cwd=os.getcwd(), preset=config.preset, sandbox=False,
+            env=hook_env, timeout=1800,
         )
         if not hook_result.skipped:
             if hook_result.aborted:
@@ -264,5 +316,11 @@ async def run_agent(
                 print(f"\n[onAgentEnd exited {hook_result.returncode}]",
                       file=sys.stderr)
                 had_error = True
+
+    # --- Session end (emit result, then close log/feed subscribers) ---
+    # Done after the onAgentEnd hook so the hook can still write events.
+    if hub:
+        stop_reason = "max_turn_requests" if (max_turns is not None and turn >= max_turns) else "end_turn"
+        hub.on_session_end(stop_reason)
 
     return 1 if had_error else 0

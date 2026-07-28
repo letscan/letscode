@@ -296,6 +296,7 @@ async def _async_main(args):
                     "sandbox": config.sandbox,
                     "verbose": args.verbose,
                     "scan_dirs": scan_dirs,
+                    "state_file": args.state,
                 },
                 tool_allowlist=overrides.tool_allowlist,
                 skill_allowlist=overrides.skill_allowlist,
@@ -346,6 +347,8 @@ async def _async_main(args):
                     msg_sub=msg_sub,
                     on_agent_start=overrides.on_agent_start,
                     on_agent_end=overrides.on_agent_end,
+                    state_file=args.state,
+                    config_path=args.config,
                 )
             except asyncio.CancelledError:
                 # Ctrl-C: the task was cancelled mid-run. Acknowledge immediately
@@ -587,6 +590,13 @@ def main():
         help="Extra directory to scan for skills (<dir>/skills) and agent "
              "cards (<dir>/agents). Repeatable. Appended to config add_scan_dirs.",
         action="append",
+        default=None,
+    )
+    parser.add_argument(
+        "--state",
+        help="Path to a shared state JSON file for multi-agent orchestration. "
+             "Passed to hooks (via $LETSCODE_STATE env var) and forwarded to "
+             "spawned sub-agents. The file is created if it doesn't exist.",
         default=None,
     )
     parser.add_argument(

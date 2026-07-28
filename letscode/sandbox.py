@@ -21,6 +21,7 @@ _SYSTEM_READ = """\
 (allow file-read* (subpath "/private/var"))
 (allow file-read* (subpath "/opt"))
 (allow file-read* (subpath "/Library"))
+(allow file-read* (subpath "/Applications"))
 (allow file-read-metadata)"""
 
 _SECRETS_DENY_READ = """\

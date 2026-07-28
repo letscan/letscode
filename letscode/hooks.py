@@ -67,18 +67,31 @@ def run_hook(
     preset: str = "default",
     sandbox: bool = True,
     timeout: int = 120,
+    env: dict | None = None,
 ) -> HookResult:
     """Run a hook script and return its output.
 
     ``script_path`` is executed via ``[shell, script_path]`` in ``cwd``,
     optionally wrapped by the macOS Seatbelt sandbox. stdin receives
-    ``stdin_data`` (the run JSON). If the path doesn't exist, returns a
+    ``stdin_data`` (the run JSON). ``env`` adds extra environment variables
+    (merged on top of os.environ). If the path doesn't exist, returns a
     ``skipped`` result rather than raising.
     """
-    # Resolve relative to cwd; skip silently if the script doesn't exist.
+    # Resolve the script path. Try: (1) as-is if absolute, (2) relative to
+    # cwd, (3) relative to the builtin_agents package dir (for builtin card
+    # hooks that ship with letscode). Skip silently if not found.
     full_path = script_path if os.path.isabs(script_path) else os.path.join(cwd, script_path)
     if not os.path.isfile(full_path):
-        return HookResult(stdout="", returncode=0, skipped=True)
+        # Try builtin_agents package dir (hooks shipped with letscode).
+        try:
+            from importlib.resources import files
+            builtin_path = files("letscode.builtin_agents") / script_path
+            if builtin_path.is_file():
+                full_path = str(builtin_path)
+            else:
+                return HookResult(stdout="", returncode=0, skipped=True)
+        except Exception:
+            return HookResult(stdout="", returncode=0, skipped=True)
 
     shell = os.environ.get("SHELL", "/bin/bash")
     cmd = [shell, full_path]
@@ -92,6 +105,10 @@ def run_hook(
         cmd = wrap_command(cmd, cwd, preset)
 
     try:
+        run_env = None
+        if env:
+            run_env = dict(os.environ)
+            run_env.update(env)
         result = subprocess.run(
             cmd,
             input=stdin_data,
@@ -99,6 +116,7 @@ def run_hook(
             text=True,
             timeout=timeout,
             cwd=cwd,
+            env=run_env,
         )
     except subprocess.TimeoutExpired:
         return HookResult(stdout="", returncode=124)
