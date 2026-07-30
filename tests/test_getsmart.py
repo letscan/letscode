@@ -130,8 +130,13 @@ class TestCardStructure:
     def test_card_fields(self):
         gs = load_agent_card("GetSmart")
         assert gs.preset == "default"
+        # GetSmart is a generator, not a doer: it investigates (Read/Glob/Grep)
+        # and writes workflow.py (Write/Edit/Bash). It deliberately does NOT
+        # have the Agent tool — it delegates work via the workflow, not by
+        # spawning sub-agents itself.
         assert "Write" in gs.tools and "Bash" in gs.tools
-        assert "Agent" in gs.tools  # may spawn Explore for investigation
+        assert "Read" in gs.tools
+        assert "Agent" not in gs.tools
         assert gs.on_agent_end is not None
         assert "getsmart_run.sh" in gs.on_agent_end
 
