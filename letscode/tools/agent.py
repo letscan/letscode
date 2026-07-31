@@ -1,5 +1,6 @@
 """Agent tool — spawn letscode itself as a subprocess for sub-agent tasks."""
 
+import os
 import subprocess
 import sys
 from typing import Any
@@ -78,6 +79,24 @@ def execute(
     subagent_type = args.get("subagent_type")
     max_turns = args.get("max_turns", 30)
     timeout = 300
+
+    # Recursion guard: refuse to spawn a sub-agent whose card is this agent
+    # itself or any of its ancestors (read from LETSCODE_AGENT_CHAIN, set by
+    # cli.py on each spawn). This prevents infinite recursion (A→A, A→B→A)
+    # while allowing arbitrary-depth acyclic delegation (A→B→C). The chain
+    # carries only named cards (+ a "__default__" sentinel for the no-card
+    # agent); "general-purpose" (no --as) is never in the chain, so spawning
+    # it is always allowed.
+    if subagent_type:
+        chain = [c for c in os.environ.get("LETSCODE_AGENT_CHAIN", "").split(",") if c]
+        if subagent_type.lower() in chain:
+            cycle = " -> ".join(chain + [subagent_type])
+            return (
+                f"<error>Refusing to spawn sub-agent {subagent_type!r}: it is "
+                f"already in this agent's ancestor chain ({cycle}), which "
+                f"would recurse. Delegate to a different agent or do the "
+                f"work directly.</error>"
+            )
 
     cmd = [sys.executable, "-m", "letscode", "--max-turns", str(max_turns), "--no-mcp"]
     if config_path:

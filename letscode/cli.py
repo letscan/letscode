@@ -166,6 +166,18 @@ async def _async_main(args):
         overrides = apply_card(config, mcp_servers, card)
         mcp_servers = overrides.mcp_servers
 
+        # Agent recursion guard: track this run's card name in the ancestor
+        # chain (inherited from any parent agent that spawned us via the Agent
+        # tool). The Agent tool reads LETSCODE_AGENT_CHAIN and refuses to spawn
+        # a sub-agent whose card is already in the chain — preventing infinite
+        # recursion (A→A, A→B→A) while still allowing arbitrary-depth acyclic
+        # delegation (A→B→C). Only named cards join the chain; the default
+        # (no-card) agent uses a sentinel so a card→default→card loop is caught.
+        _me = (args.agent or "__default__").lower()
+        _prior = os.environ.get("LETSCODE_AGENT_CHAIN", "")
+        _chain = (_prior + "," if _prior else "") + _me
+        os.environ["LETSCODE_AGENT_CHAIN"] = _chain
+
         # Card preset overrides config.json's preset (safe/default/risk); the
         # CLI --preset flag still wins over both. Applied to ModelConfig here
         # so the merge_rules(preset, ...) call below sees the card's intent.
