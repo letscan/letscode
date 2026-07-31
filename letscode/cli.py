@@ -110,6 +110,37 @@ def _load_session_allow_config(path: Path) -> dict[str, list[str]]:
     return out
 
 
+def _emit_termination_notice(reason: str, *, event_stream: bool, hub) -> None:
+    """Emit a "run ended early" notice per the CLI exit-code contract (School A).
+
+    The CONTENT is identical regardless of mode (the caller/LLM must learn the
+    run ended early and why); only the CARRIER differs, and each mode's carrier
+    must stay valid for its consumers:
+
+    - ``--event-stream`` mode: the stdout stream is strict JSONL consumed by
+      the ACP server line-by-line (json.loads per line). So the notice goes
+      ONLY as typed JSONL events (``error`` with ``code="interrupted"`` + a
+      terminal ``result``) — NEVER as a bare text line, which would corrupt
+      the stream.
+    - text / sub-agent mode: a one-line human-readable notice on **stdout**
+      so a capturing parent (gs / the Agent tool / DevHard) gets *something*
+      to feed back — never an empty pipe.
+
+    ``hub`` is the EventHub (available in _async_main); None in the main()
+    last-resort path, where the hub is already closed and only text output is
+    possible (and event_stream there means the JSONL stream already ended, so
+    a bare line would still be invalid — we emit nothing extra in that case).
+    """
+    if event_stream:
+        # JSONL stream only. A bare text line would break json.loads consumers.
+        if hub is not None:
+            hub.emit_error(reason, code="interrupted", recoverable=False)
+            hub.on_session_end("interrupted")
+    else:
+        print(f"Agent terminated early: {reason}", file=sys.stdout)
+        print()  # final newline
+
+
 async def _async_main(args):
     """Main entry: single event loop for MCP connections + agent loop."""
     original_cwd = os.getcwd()
@@ -367,26 +398,10 @@ async def _async_main(args):
                 # (caller can neither treat it as success nor as a caught
                 # failure). So we surface a one-line termination notice.
                 print("\nInterrupted, shutting down…", file=sys.stderr)
-                if args.event_stream:
-                    # Structured mode: emit typed events so the JSONL stream has
-                    # a proper error + terminal result (subscribers close on
-                    # result). Keep emitting while the hub is still open (the
-                    # finally block below closes it).
-                    if hub is not None:
-                        hub.emit_error(
-                            "agent run cancelled before completion",
-                            code="interrupted", recoverable=False,
-                        )
-                        hub.on_session_end("interrupted")
-                else:
-                    # Human/text mode (also the sub-agent subprocess mode used
-                    # by the Agent tool and gs): print a one-line notice to
-                    # stdout so a capturing parent gets *something* to feed
-                    # back, not an empty pipe.
-                    print("Agent terminated early: run was cancelled before "
-                          "completion (interrupted).", file=sys.stdout)
-                    if not args.event_stream:
-                        print()  # final newline
+                _emit_termination_notice(
+                    "run was cancelled before completion (interrupted)",
+                    event_stream=args.event_stream, hub=hub,
+                )
                 return 0
             if not args.event_stream:
                 print()  # final newline
@@ -691,16 +706,28 @@ def main():
 
     try:
         rc = asyncio.run(_async_main(args))
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        # Last-resort interrupt handling: a Ctrl-C (KeyboardInterrupt) or a
-        # cancellation that escaped _async_main's own handler (e.g. raised
-        # inside the finally teardown). _async_main already handles the
-        # in-run CancelledError per the School-A contract (exit 0 + a
-        # descriptive message); this catches the residual cases. Keep exit 0
-        # (interrupt is not a process failure) and emit a notice so a
-        # capturing parent still gets a non-empty stdout.
-        if not args.event_stream:
-            print("Agent terminated early: interrupted.", file=sys.stdout)
+    except KeyboardInterrupt:
+        # A genuine user Ctrl-C (asyncio.run turns SIGINT into KeyboardInterrupt
+        # when it lands outside the task). The user initiated this, so the
+        # notice is kept brief — but still emitted (School A: never empty
+        # stdout) so a capturing parent gets a non-empty pipe. Exit 0: an
+        # interrupt is not a process-level failure.
+        _emit_termination_notice(
+            "interrupted by user (Ctrl-C)",
+            event_stream=args.event_stream, hub=None,
+        )
+        return
+    except asyncio.CancelledError:
+        # A cancellation that ESCAPED _async_main's own handler — rare (it
+        # catches in-run cancels), but possible if one is raised inside the
+        # finally teardown (e.g. MCP disconnect). Distinct from KeyboardInterrupt:
+        # this is an internal cancellation, not a user action. Same School-A
+        # contract (exit 0 + notice), but labeled as internal so the cause
+        # isn't misattributed to the user.
+        _emit_termination_notice(
+            "run was cancelled internally before completion",
+            event_stream=args.event_stream, hub=None,
+        )
         return
     if rc:
         raise SystemExit(rc)
