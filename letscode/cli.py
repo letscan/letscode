@@ -351,11 +351,43 @@ async def _async_main(args):
                     config_path=args.config,
                 )
             except asyncio.CancelledError:
-                # Ctrl-C: the task was cancelled mid-run. Acknowledge immediately
-                # so the user knows the interrupt was received (before the brief
-                # teardown below), then re-raise so finally runs cleanup.
+                # The run was cancelled mid-flight. Two indistinguishable sources
+                # land here as the same exception: a genuine user Ctrl-C, and an
+                # internal cancellation propagated up from a poisoned MCP
+                # session / streaming call (e.g. a remote MCP 429 that the
+                # transport's anyio TaskGroup turned into a cancel).
+                #
+                # CLI exit-code contract (School A, matching Claude Code): we do
+                # NOT treat this as a process-level failure (exit stays 0) so a
+                # parent process (gs / the Agent tool / DevHard) doesn't see a
+                # spurious non-zero exit. But — crucially — we must NOT leave
+                # stdout empty either: the contract is "exit 0 AND emit a
+                # descriptive message so the caller/LLM knows the run ended
+                # early and why." Empty stdout + exit 0 is the worst-of-both
+                # (caller can neither treat it as success nor as a caught
+                # failure). So we surface a one-line termination notice.
                 print("\nInterrupted, shutting down…", file=sys.stderr)
-                raise
+                if args.event_stream:
+                    # Structured mode: emit typed events so the JSONL stream has
+                    # a proper error + terminal result (subscribers close on
+                    # result). Keep emitting while the hub is still open (the
+                    # finally block below closes it).
+                    if hub is not None:
+                        hub.emit_error(
+                            "agent run cancelled before completion",
+                            code="interrupted", recoverable=False,
+                        )
+                        hub.on_session_end("interrupted")
+                else:
+                    # Human/text mode (also the sub-agent subprocess mode used
+                    # by the Agent tool and gs): print a one-line notice to
+                    # stdout so a capturing parent gets *something* to feed
+                    # back, not an empty pipe.
+                    print("Agent terminated early: run was cancelled before "
+                          "completion (interrupted).", file=sys.stdout)
+                    if not args.event_stream:
+                        print()  # final newline
+                return 0
             if not args.event_stream:
                 print()  # final newline
             return rc
@@ -660,11 +692,15 @@ def main():
     try:
         rc = asyncio.run(_async_main(args))
     except (KeyboardInterrupt, asyncio.CancelledError):
-        # Ctrl-C: asyncio.run cancelled the task and ran finally blocks
-        # (MCP disconnect with timeout, hub.close). Depending on where the
-        # interrupt landed, asyncio.run surfaces either KeyboardInterrupt or a
-        # bare CancelledError (a BaseException, not caught by `except Exception`)
-        # — catch both and exit quietly without dumping a traceback.
+        # Last-resort interrupt handling: a Ctrl-C (KeyboardInterrupt) or a
+        # cancellation that escaped _async_main's own handler (e.g. raised
+        # inside the finally teardown). _async_main already handles the
+        # in-run CancelledError per the School-A contract (exit 0 + a
+        # descriptive message); this catches the residual cases. Keep exit 0
+        # (interrupt is not a process failure) and emit a notice so a
+        # capturing parent still gets a non-empty stdout.
+        if not args.event_stream:
+            print("Agent terminated early: interrupted.", file=sys.stdout)
         return
     if rc:
         raise SystemExit(rc)
