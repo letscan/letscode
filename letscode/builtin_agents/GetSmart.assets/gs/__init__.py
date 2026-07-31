@@ -921,24 +921,27 @@ def _run_agent(card: str, prompt: str, model: str | None, mcp: bool = False) -> 
         raise RuntimeError(f"agent {card!r} timed out (900s)") from e
     out = (r.stdout or "").strip()
     err = (r.stderr or "").strip()
-    if r.returncode != 0:
-        # Surface the failure, but still return whatever stdout we got so a
-        # downstream summary node can report on it. The node is marked failed
-        # via the exception path in _exec_node's caller? — no: we return out
-        # and rely on returncode to raise so the node is marked failed.
-        raise RuntimeError(
-            f"agent {card!r} exit {r.returncode}: "
-            f"{(r.stderr or '').strip()[:500]}"
-        )
+
+    # Soft-failure semantics (School A, aligned with the CLI exit-code contract):
+    # a sub-agent that ran into trouble but STILL produced stdout text — e.g.
+    # the CLI's "Agent terminated early: ..." notice on cancellation, or a
+    # partial answer before an error — yields that text as the node's output.
+    # The downstream synthesize/summary node can then report "N of M
+    # investigations failed" instead of the whole workflow collapsing. Only a
+    # truly fatal outcome (no stdout at all) raises, so a dependency with no
+    # data to pass on still propagates as a hard failure (skip downstream).
     if not out:
-        # rc=0 but empty stdout: the sub-agent exited cleanly without printing
-        # a final message (commonly an API error / max-turns / interrupted
-        # mid-tool-call). Surface stderr so the cause isn't silent, and mark
-        # the node failed — an empty research report is NOT a usable result.
+        # No stdout regardless of exit code: nothing to feed downstream.
         tail = err[-500:] if err else "(no stderr)"
         raise RuntimeError(
-            f"agent {card!r} produced no output (rc=0). stderr tail: {tail}"
+            f"agent {card!r} produced no output (exit {r.returncode}). "
+            f"stderr tail: {tail}"
         )
+    if r.returncode != 0:
+        # Non-zero exit BUT stdout has content: annotate the output with the
+        # failure signal so downstream nodes know this is degraded data, not a
+        # clean result. (A truly clean run is exit 0 with content.)
+        return f"{out}\n\n[agent exit code {r.returncode}; stderr: {err[-200:]}]"
     return out
 
 

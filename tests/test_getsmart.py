@@ -423,6 +423,89 @@ class TestWorkflowRun:
         assert (wf_dirs[0] / "mermaid.md").is_file()
 
 
+# ── _run_agent soft-failure semantics (P3) ──
+
+class TestRunAgentSoftFailure:
+    """The P3 soft-failure contract: a sub-agent that ran into trouble but
+    STILL produced stdout (e.g. the CLI's 'Agent terminated early' notice on
+    cancellation, or a partial answer before an error) yields that text as the
+    node's output — so a downstream synthesize node can report 'N of M failed'
+    instead of the whole workflow collapsing. Only a truly fatal outcome
+    (no stdout at all) raises."""
+
+    def test_exit0_with_stdout_returns_stdout(self, monkeypatch):
+        import subprocess as _sp
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(_sp, "run", lambda *a, **k: MagicMock(
+            stdout="real research result", stderr="", returncode=0))
+        from gs import _run_agent
+        assert _run_agent("Explore", "p", None) == "real research result"
+
+    def test_nonzero_exit_with_stdout_returns_degraded_output(self, monkeypatch):
+        """exit!=0 BUT stdout has content → return it, annotated as degraded
+        (NOT raise). This is the cancel-with-notice path the CLI contract
+        guarantees."""
+        import subprocess as _sp
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(_sp, "run", lambda *a, **k: MagicMock(
+            stdout="Agent terminated early: interrupted.",
+            stderr="some error", returncode=1))
+        from gs import _run_agent
+        out = _run_agent("Explore", "p", None)
+        assert "Agent terminated early" in out
+        assert "exit code 1" in out  # degraded annotation present
+
+    def test_empty_stdout_raises_regardless_of_exit(self, monkeypatch):
+        """No stdout → raise (fatal: nothing to feed downstream)."""
+        import subprocess as _sp
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(_sp, "run", lambda *a, **k: MagicMock(
+            stdout="", stderr="boom", returncode=0))
+        from gs import _run_agent
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="produced no output"):
+            _run_agent("Explore", "p", None)
+
+    def test_timeout_raises(self, monkeypatch):
+        import subprocess as _sp
+        monkeypatch.setattr(_sp, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                _sp.TimeoutExpired(cmd="x", timeout=900)))
+        from gs import _run_agent
+        import pytest as _pytest
+        with _pytest.raises(RuntimeError, match="timed out"):
+            _run_agent("Explore", "p", None)
+
+    def test_degraded_node_does_not_crash_workflow(self, tmp_path, monkeypatch):
+        """A fan-out → synthesize workflow where all research nodes return
+        degraded output (non-zero exit but stdout present) must still produce
+        a deliverable — NOT sys.exit(1). This is the load-bearing P3 assertion:
+        'Research 全挂时 workflow 也该有结果'."""
+        import subprocess as _sp
+        from unittest.mock import MagicMock
+        monkeypatch.chdir(tmp_path)
+
+        def fake_run(cmd, **kw):
+            # Every sub-agent 'fails' (exit 1) but produces a notice on stdout.
+            return MagicMock(
+                stdout="Agent terminated early: rate limit hit.",
+                stderr="429", returncode=1)
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        wf = Workflow("t")
+        a = wf.agent("Explore", "investigate A", id="A", mcp=True)
+        b = wf.agent("Explore", "investigate B", id="B", mcp=True)
+        wf.llm("synthesize {A.output} and {B.output}", needs=[a, b], id="S")
+
+        with patch("gs._run_llm", return_value="SYNTHESIZED REPORT"):
+            res = wf.run()  # must NOT raise SystemExit
+        assert res == {"A": "ok", "B": "ok", "S": "ok"}, res
+        # synthesize ran (not skipped) and produced a deliverable
+        s = next(n for n in wf.nodes if n.id == "S")
+        assert s.status == "ok"
+        assert s.output == "SYNTHESIZED REPORT"
+
+
 # ── Control-flow: conditional validate ──
 
 class TestConditionalValidate:
