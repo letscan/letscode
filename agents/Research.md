@@ -1,7 +1,7 @@
 ---
 name: Research
 description: Web research specialist using exa search/fetch; investigates a topic and returns a structured findings report
-tools: [Read, Glob, Grep, Agent, mcp__exa__web_search_exa, mcp__exa__web_fetch_exa]
+tools: [Read, Glob, Grep, mcp__exa__web_search_exa, mcp__exa__web_fetch_exa]
 mcp_servers: [exa]
 preset: safe
 ---
