@@ -13,6 +13,7 @@ cause. These tests pin the fix.
 """
 
 import asyncio
+import time
 
 import pytest
 
@@ -136,3 +137,106 @@ class TestDescribeCancel:
     def test_no_args(self):
         msg = _describe_cancel("exa", "search", asyncio.CancelledError())
         assert msg == "cancelled"
+
+
+class TestReconnectOnCancel:
+    """call_tool must reconnect (tear down the poisoned session, build a fresh
+    one) between retries on CancelledError — retrying on the same poisoned
+    session is futile (SDK #1358)."""
+
+    @pytest.fixture
+    def fast_backoff(self, monkeypatch):
+        async def _instant(_delay=0):
+            return None
+        monkeypatch.setattr(asyncio, "sleep", _instant)
+
+    def test_reconnect_called_between_retries(self, monkeypatch, fast_backoff):
+        """On CancelledError, reconnect() is invoked before the next attempt."""
+        conn = _make_conn()
+        conn._session.script = [asyncio.CancelledError("cancel scope x"),
+                                "recovered"]
+        reconnect_calls = []
+
+        async def fake_reconnect():
+            reconnect_calls.append(time.monotonic())
+            # Simulate a fresh session by giving the existing one a clean slate.
+            return True
+        monkeypatch.setattr(conn, "reconnect", fake_reconnect)
+
+        r = asyncio.run(conn.call_tool("web_search", {"q": "x"}))
+        assert r == "recovered"
+        assert len(reconnect_calls) == 1, "reconnect should fire once before the retry"
+
+    def test_reconnect_replaces_poisoned_session(self, monkeypatch, fast_backoff):
+        """After a CancelledError + reconnect, the next call uses a NEW session
+        object (the poisoned one is gone)."""
+        conn = _make_conn()
+        old_session = conn._session
+        old_session.script = [asyncio.CancelledError("cancel scope x")]
+
+        new_session = _make_conn()._session  # fresh, clean session
+        new_session.script = ["fresh-result"]
+
+        async def fake_reconnect():
+            conn._session = new_session
+            return True
+        monkeypatch.setattr(conn, "reconnect", fake_reconnect)
+
+        r = asyncio.run(conn.call_tool("web_search", {"q": "x"}))
+        assert r == "fresh-result"
+        assert conn._session is new_session, "poisoned session must be replaced"
+        assert conn._session is not old_session
+
+    def test_reconnect_failure_returns_clear_error(self, monkeypatch, fast_backoff):
+        """If reconnect keeps failing and session becomes None, call_tool must
+        return a clear <error> — NOT crash with AttributeError on None.call_tool."""
+        conn = _make_conn()
+        conn._session.script = [asyncio.CancelledError("cancel scope x")] * 10
+
+        async def fake_reconnect():
+            conn._session = None  # reconnect failed, no session
+            return False
+        monkeypatch.setattr(conn, "reconnect", fake_reconnect)
+
+        r = asyncio.run(conn.call_tool("web_search", {"q": "x"}))
+        assert r.startswith("<error>")
+        assert "session unavailable" in r or "failed" in r.lower()
+
+
+class TestReconnectMethod:
+    """Direct tests for McpConnection.reconnect()."""
+
+    def test_reconnect_disconnects_then_connects(self, monkeypatch):
+        """reconnect() calls disconnect() then connect(), clearing tools first
+        so they aren't duplicated."""
+        conn = _make_conn()
+        conn.tools = [{"old": True}]
+        order = []
+
+        async def fake_disconnect():
+            order.append("disconnect")
+        async def fake_connect():
+            order.append("connect")
+            conn._connected = True
+            conn.tools = [{"new": True}]
+        monkeypatch.setattr(conn, "disconnect", fake_disconnect)
+        monkeypatch.setattr(conn, "connect", fake_connect)
+
+        ok = asyncio.run(conn.reconnect())
+        assert ok is True
+        assert order == ["disconnect", "connect"]
+        assert conn.tools == [{"new": True}], "tools cleared + repopulated, not duplicated"
+
+    def test_reconnect_returns_false_on_connect_failure(self, monkeypatch):
+        conn = _make_conn()
+
+        async def fake_disconnect():
+            pass
+        async def fake_connect():
+            conn._connected = False  # connect failed
+        monkeypatch.setattr(conn, "disconnect", fake_disconnect)
+        monkeypatch.setattr(conn, "connect", fake_connect)
+
+        ok = asyncio.run(conn.reconnect())
+        assert ok is False
+

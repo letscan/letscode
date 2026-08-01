@@ -129,6 +129,15 @@ class McpConnection:
         max_retries = 3
         last_reason = "unknown error"
         for attempt in range(max_retries + 1):
+            # After a failed reconnect, self._session may be None — guard so we
+            # surface a clear error instead of an AttributeError on the next call.
+            if not self._session:
+                last_reason = "session unavailable (reconnect failed)"
+                if attempt >= max_retries:
+                    break
+                # Try to reconnect before giving up entirely.
+                if not await self.reconnect():
+                    continue
             try:
                 result = await self._session.call_tool(tool_name, arguments)
                 # Collect text content from result
@@ -168,6 +177,20 @@ class McpConnection:
                     # can proceed to the next retry / the final return.
                     if task is not None:
                         task.uncancel()
+                # Reconnect on a fresh session before the next attempt: the
+                # current session is poisoned (its cancel-scope state persists,
+                # so the next call_tool on it would be cancelled again — SDK
+                # issue #1358). Retrying on a brand-new session is the only way
+                # a transient error (5xx / network blip) actually clears. For a
+                # persistent 429 (e.g. an unauthenticated shared pool) reconnect
+                # won't help — only an API key will — but it's still correct
+                # behavior and the final <error> result surfaces that.
+                reconnected = await self.reconnect()
+                if not reconnected:
+                    _info(
+                        f"[MCP] {self.name}: reconnect failed; will still "
+                        "attempt the next retry on the existing state."
+                    )
             except Exception as e:
                 return f"<error>MCP {self.name}/{tool_name}: {e}</error>"
 
@@ -187,6 +210,29 @@ class McpConnection:
             self._exit_stack = None
             self._session = None
             self._connected = False
+
+    async def reconnect(self) -> bool:
+        """Tear down the current (likely poisoned) session and establish a fresh one.
+
+        The streamable-HTTP transport poisons its session after a transport-layer
+        error (the anyio TaskGroup's cancel-scope state persists, so every
+        subsequent call on the same session is cancelled — SDK issue
+        modelcontextprotocol/python-sdk#1358). Retrying on the poisoned session
+        is futile; the only recovery is a brand-new session. This is the
+        community-recommended workaround.
+
+        Returns True if the new session connected and re-discovered tools,
+        False otherwise (caller falls back to its <error> result). Best-effort:
+        a reconnect failure does not lose the original error.
+        """
+        await self.disconnect()
+        # connect() appends to self.tools, so clear first to avoid duplicates.
+        self.tools = []
+        try:
+            await asyncio.wait_for(self.connect(), timeout=_DEFAULT_CONNECT_TIMEOUT)
+        except (asyncio.TimeoutError, Exception):
+            return False
+        return self._connected
 
 
 class McpManager:
