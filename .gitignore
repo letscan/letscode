@@ -32,6 +32,10 @@ acp-zed.log
 # MCP server runtime artifacts
 .playwright-mcp/
 
+# AI assistant tooling caches (plans, memory — per-session, never project files)
+.zcode/
+.workbuddy/
+
 # IDEs
 .vscode/
 .idea/
