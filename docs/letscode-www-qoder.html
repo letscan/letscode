@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LetsCode — Set the rules. Let it code.</title>
+<meta name="description" content="LetsCode is a lightweight, CLI-first AI coding agent harness. Rules-driven, fully customizable, built for the terminal — loops over any OpenAI-compatible LLM until the task is done.">
+<meta property="og:title" content="LetsCode — Set the rules. Let it code.">
+<meta property="og:description" content="A lightweight, CLI-first AI coding agent harness. Rules-driven autonomy, AgentCards, Unix-style composition, ACP editor integration.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0e13'/%3E%3Cpath d='M18 20l14 12-14 12' stroke='%2333e68f' stroke-width='6' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M36 46h12' stroke='%2333e68f' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============ tokens ============ */
+:root{
+  --bg:#0a0e13;
+  --bg-soft:#0d1319;
+  --panel:#0f161e;
+  --panel-2:#121b24;
+  --line:rgba(154,183,210,.13);
+  --line-strong:rgba(154,183,210,.24);
+  --text:#e9eff5;
+  --muted:#93a4b6;
+  --dim:#5e6f80;
+  --green:#33e68f;
+  --green-bright:#5cf5ac;
+  --green-soft:rgba(51,230,143,.1);
+  --amber:#ffb454;
+  --red:#ff7070;
+  --cyan:#54c7f0;
+  --violet:#a78bfa;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'Inter',system-ui,-apple-system,sans-serif;
+  --disp:'Space Grotesk',var(--sans);
+  --nav-h:64px;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:16px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+::selection{background:rgba(51,230,143,.28)}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer}
+img,svg{display:block}
+section{scroll-margin-top:calc(var(--nav-h) + 16px)}
+
+/* ============ background ============ */
+.bg-fx{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(900px 480px at 78% -8%, rgba(51,230,143,.13), transparent 60%),
+    radial-gradient(700px 420px at 8% 12%, rgba(84,199,240,.07), transparent 60%),
+    var(--bg);
+}
+.bg-fx::after{
+  content:"";position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(154,183,210,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(154,183,210,.05) 1px, transparent 1px);
+  background-size:44px 44px;
+  mask-image:radial-gradient(1200px 700px at 50% 0%, #000 30%, transparent 75%);
+  -webkit-mask-image:radial-gradient(1200px 700px at 50% 0%, #000 30%, transparent 75%);
+}
+
+/* ============ layout ============ */
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+.section{padding:104px 0}
+.kicker{
+  display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--green);
+  margin-bottom:18px;
+}
+.kicker::before{content:"";width:22px;height:1px;background:var(--green);opacity:.7}
+h1,h2,h3{font-family:var(--disp);letter-spacing:-.01em}
+.h2{font-size:clamp(28px,4vw,42px);font-weight:700;line-height:1.15}
+.sub{color:var(--muted);font-size:17px;max-width:640px;margin-top:16px}
+
+/* ============ nav ============ */
+.nav{
+  position:fixed;top:0;left:0;right:0;z-index:50;height:var(--nav-h);
+  display:flex;align-items:center;
+  border-bottom:1px solid transparent;
+  transition:background .25s,border-color .25s;
+}
+.nav.scrolled{
+  background:rgba(10,14,19,.82);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border-bottom-color:var(--line);
+}
+.nav .wrap{display:flex;align-items:center;justify-content:space-between;width:100%}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--disp);font-weight:700;font-size:18px;letter-spacing:-.01em}
+.brand-mark{
+  width:30px;height:30px;border-radius:8px;flex:none;
+  background:linear-gradient(160deg,#131c26,#0c1218);
+  border:1px solid var(--line-strong);
+  display:grid;place-items:center;
+}
+.brand em{color:var(--green);font-style:normal}
+.nav-links{display:flex;align-items:center;gap:30px;font-size:14.5px;color:var(--muted)}
+.nav-links a:hover{color:var(--text)}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;
+  border-radius:10px;font-weight:600;font-size:15px;
+  padding:11px 20px;border:1px solid transparent;
+  transition:transform .15s,box-shadow .2s,background .2s,border-color .2s,color .2s;
+}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--green);color:#04120a}
+.btn-primary:hover{background:var(--green-bright);box-shadow:0 0 28px rgba(51,230,143,.35)}
+.btn-ghost{border-color:var(--line-strong);color:var(--text);background:transparent}
+.btn-ghost:hover{border-color:var(--green);color:var(--green)}
+.btn-sm{padding:8px 15px;font-size:13.5px;border-radius:9px}
+
+/* ============ hero ============ */
+.hero{padding:calc(var(--nav-h) + 72px) 0 88px}
+.hero-grid{display:grid;grid-template-columns:1.02fr .98fr;gap:56px;align-items:center}
+.badge{
+  display:inline-flex;align-items:center;gap:9px;
+  font-family:var(--mono);font-size:12.5px;color:var(--muted);
+  border:1px solid var(--line);border-radius:999px;padding:6px 14px;
+  background:rgba(15,22,30,.6);
+  margin-bottom:26px;
+}
+.badge .dot-live{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 2.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hero h1{
+  font-size:clamp(40px,5.6vw,64px);font-weight:700;line-height:1.06;letter-spacing:-.02em;
+}
+.hero h1 .accent{color:var(--green);text-shadow:0 0 34px rgba(51,230,143,.35)}
+.hero-sub{color:var(--muted);font-size:17.5px;margin-top:22px;max-width:540px}
+.hero-sub strong{color:var(--text);font-weight:600}
+
+/* install box */
+.install{
+  margin-top:30px;display:flex;align-items:center;gap:10px;
+  background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;
+  padding:13px 14px 13px 18px;max-width:600px;
+  font-family:var(--mono);font-size:13px;
+  box-shadow:0 12px 40px rgba(0,0,0,.35);
+}
+.install .prompt{color:var(--green);flex:none}
+.install code{
+  color:#c9d6e2;white-space:nowrap;overflow-x:auto;flex:1;
+  scrollbar-width:none;
+}
+.install code::-webkit-scrollbar{display:none}
+.copy-btn{
+  flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:32px;height:32px;border-radius:8px;border:1px solid var(--line);
+  background:transparent;color:var(--muted);transition:all .2s;
+}
+.copy-btn:hover{color:var(--green);border-color:var(--green)}
+.copy-btn.copied{color:var(--green);border-color:var(--green)}
+.hero-ctas{display:flex;gap:14px;margin-top:26px;flex-wrap:wrap}
+.hero-note{margin-top:16px;font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+
+/* terminal */
+.term{
+  background:linear-gradient(180deg,#0e151d,#0b1117);
+  border:1px solid var(--line-strong);border-radius:var(--radius);
+  box-shadow:0 30px 80px rgba(0,0,0,.5), 0 0 60px rgba(51,230,143,.07);
+  overflow:hidden;
+}
+.term-head{
+  display:flex;align-items:center;gap:8px;height:42px;padding:0 16px;
+  border-bottom:1px solid var(--line);background:rgba(255,255,255,.02);
+}
+.t-dot{width:11px;height:11px;border-radius:50%}
+.t-dot.r{background:#ff5f57}.t-dot.y{background:#febc2e}.t-dot.g{background:#28c840}
+.term-title{margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.term-replay{
+  margin-left:auto;background:none;border:none;color:var(--dim);
+  font-size:15px;padding:2px 6px;border-radius:6px;line-height:1;
+}
+.term-replay:hover{color:var(--green)}
+.term-body{
+  padding:20px 20px 24px;font-family:var(--mono);font-size:13px;line-height:1.85;
+  min-height:288px;
+}
+.term-body .ln{white-space:pre-wrap;word-break:break-word}
+.t-prompt{color:var(--green)}
+.t-cmd{color:#e9eff5}
+.t-dim{color:var(--dim)}
+.t-file{color:var(--cyan)}
+.t-ok{color:var(--green)}
+.t-cmdline{color:#d5deea}
+.t-stat{color:var(--violet)}
+.t-note{color:var(--muted)}
+.caret{
+  display:inline-block;width:8px;height:15px;background:var(--green);
+  vertical-align:-2px;margin-left:2px;animation:blink 1.05s steps(1) infinite;
+}
+@keyframes blink{50%{opacity:0}}
+
+/* ============ models strip ============ */
+.models{padding:34px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:rgba(13,19,25,.5)}
+.models .wrap{display:flex;align-items:center;gap:26px;flex-wrap:wrap;justify-content:center}
+.models-label{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);flex:none}
+.model-pill{
+  font-family:var(--mono);font-size:13.5px;color:var(--muted);
+  display:inline-flex;align-items:center;gap:8px;
+}
+.model-pill::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--green);opacity:.75}
+
+/* ============ deep dives ============ */
+.dive{display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center;padding:72px 0}
+.dive + .dive{border-top:1px solid var(--line)}
+.dive.flip .dive-copy{order:2}
+.dive.flip .dive-visual{order:1}
+.dive h3{font-size:clamp(24px,3vw,32px);line-height:1.2}
+.dive p{color:var(--muted);margin-top:16px;font-size:16px}
+.dive p strong{color:var(--text);font-weight:600}
+.dive-list{margin-top:22px;display:grid;gap:12px}
+.dive-list li{
+  list-style:none;display:flex;gap:12px;align-items:baseline;
+  color:var(--muted);font-size:15px;
+}
+.dive-list li::before{content:"▸";color:var(--green);font-family:var(--mono);flex:none}
+.dive-list code, p code, .card-note code{
+  font-family:var(--mono);font-size:.86em;color:#cfe0d6;
+  background:rgba(51,230,143,.08);border:1px solid rgba(51,230,143,.14);
+  padding:1.5px 6px;border-radius:6px;white-space:nowrap;
+}
+.card-note{margin-top:20px;font-size:13.5px;color:var(--dim)}
+
+/* preset cards */
+.presets{display:grid;gap:14px}
+.preset{
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);padding:18px 20px;
+  transition:border-color .2s,transform .2s;
+}
+.preset:hover{border-color:var(--line-strong);transform:translateX(4px)}
+.preset-top{display:flex;align-items:center;gap:10px}
+.preset-name{font-family:var(--mono);font-weight:700;font-size:15px}
+.preset-tag{
+  font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+  padding:2.5px 9px;border-radius:999px;border:1px solid;
+}
+.preset-desc{color:var(--muted);font-size:13.5px;margin-top:7px}
+.preset-cmd{
+  margin-top:12px;font-family:var(--mono);font-size:12.5px;color:var(--dim);
+  border-top:1px dashed var(--line);padding-top:11px;
+  white-space:nowrap;overflow-x:auto;
+}
+.preset-cmd b{color:#c9d6e2;font-weight:400}
+.p-safe .preset-name{color:var(--cyan)}
+.p-safe .preset-tag{color:var(--cyan);border-color:rgba(84,199,240,.4);background:rgba(84,199,240,.08)}
+.p-default .preset-name{color:var(--green)}
+.p-default .preset-tag{color:var(--green);border-color:rgba(51,230,143,.4);background:var(--green-soft)}
+.p-risk .preset-name{color:var(--amber)}
+.p-risk .preset-tag{color:var(--amber);border-color:rgba(255,180,84,.4);background:rgba(255,180,84,.08)}
+.shield-note{
+  margin-top:18px;display:flex;gap:10px;align-items:flex-start;
+  font-size:13px;color:var(--dim);
+}
+.shield-note svg{flex:none;margin-top:2px}
+
+/* code panel */
+.code-panel{
+  background:linear-gradient(180deg,#0e151d,#0b1117);
+  border:1px solid var(--line-strong);border-radius:var(--radius);
+  overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.4);
+}
+.code-panel .term-head{height:38px}
+.code-body{padding:18px 20px;font-family:var(--mono);font-size:12.8px;line-height:1.8;overflow-x:auto}
+.code-body .ln{white-space:pre}
+.c-key{color:var(--violet)}
+.c-str{color:var(--green)}
+.c-comment{color:var(--dim)}
+.c-head{color:var(--amber)}
+.c-flag{color:var(--cyan)}
+.c-cmd{color:#e9eff5}
+
+/* pipeline */
+.pipeline{
+  display:flex;align-items:center;gap:0;flex-wrap:wrap;
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);padding:22px 26px;
+}
+.pipe-node{
+  border:1px solid var(--line-strong);border-radius:10px;
+  background:var(--panel-2);padding:10px 18px;text-align:center;
+}
+.pipe-node b{font-family:var(--mono);font-size:14px;display:block}
+.pipe-node span{font-size:11.5px;color:var(--dim);font-family:var(--mono)}
+.pipe-arrow{
+  flex:1;min-width:34px;height:1px;background:var(--line-strong);position:relative;margin:0 4px;
+}
+.pipe-arrow::after{
+  content:"▸";position:absolute;right:-4px;top:50%;transform:translateY(-52%);
+  color:var(--green);font-size:13px;
+}
+.n-explore b{color:var(--cyan)}
+.n-plan b{color:var(--violet)}
+.n-review b{color:var(--green)}
+.pipe-sub{margin-top:16px;text-align:center;font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+
+/* acp visual */
+.acp-points{margin-top:24px;display:grid;gap:16px}
+.acp-point{display:flex;gap:14px;align-items:flex-start}
+.acp-ico{
+  flex:none;width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+  border:1px solid var(--line-strong);background:var(--panel);color:var(--green);
+}
+.acp-point b{font-size:15px;display:block}
+.acp-point span{color:var(--muted);font-size:14px}
+.acp-point span span{display:block}
+
+/* ============ features grid ============ */
+.feat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:48px}
+.feat{
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);padding:22px 20px;
+  transition:border-color .25s,transform .25s,background .25s;
+}
+.feat:hover{border-color:rgba(51,230,143,.45);transform:translateY(-3px);background:var(--panel-2)}
+.feat-ico{
+  width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+  background:var(--green-soft);border:1px solid rgba(51,230,143,.22);color:var(--green);
+  margin-bottom:15px;
+}
+.feat h4{font-family:var(--disp);font-size:15.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+.feat p{color:var(--muted);font-size:13.5px;margin-top:7px;line-height:1.55}
+.tag-acp{
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--cyan);
+  border:1px solid rgba(84,199,240,.35);border-radius:5px;padding:1px 6px;
+}
+
+/* ============ stats ============ */
+.stats{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:rgba(13,19,25,.5)}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;padding:52px 0;text-align:center}
+.stat b{
+  font-family:var(--disp);font-size:clamp(28px,3.4vw,40px);font-weight:700;
+  color:var(--green);display:block;letter-spacing:-.02em;
+}
+.stat span{color:var(--muted);font-size:14px;margin-top:6px;display:block}
+
+/* ============ quickstart ============ */
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:48px}
+.step{
+  border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
+  padding:24px;position:relative;overflow:hidden;
+}
+.step-num{
+  font-family:var(--mono);font-size:12px;color:var(--green);letter-spacing:.1em;
+  display:flex;align-items:center;gap:8px;
+}
+.step-num::after{content:"";flex:1;height:1px;background:var(--line)}
+.step h4{font-family:var(--disp);font-size:18px;margin-top:14px}
+.step > p{color:var(--muted);font-size:13.5px;margin-top:6px}
+.step-code{
+  margin-top:16px;background:#0b1117;border:1px solid var(--line);
+  border-radius:10px;padding:13px 14px;font-family:var(--mono);font-size:12px;
+  line-height:1.75;overflow-x:auto;position:relative;
+}
+.step-code .ln{white-space:pre}
+.step-code .copy-btn{position:absolute;top:8px;right:8px;width:27px;height:27px;opacity:0;transition:opacity .2s}
+.step-code:hover .copy-btn{opacity:1}
+.step-code .copy-btn.copied{opacity:1}
+.req{margin-top:26px;text-align:center;font-family:var(--mono);font-size:13px;color:var(--dim)}
+.req a{color:var(--green);border-bottom:1px dashed rgba(51,230,143,.4)}
+
+/* ============ cta ============ */
+.cta{text-align:center;position:relative}
+.cta-glow{
+  position:absolute;left:50%;top:36%;transform:translate(-50%,-50%);
+  width:760px;height:420px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(closest-side, rgba(51,230,143,.14), transparent);
+}
+.cta h2{font-size:clamp(32px,4.6vw,52px);position:relative}
+.cta h2 .accent{color:var(--green)}
+.cta .sub{margin:18px auto 0;position:relative}
+.cta .install{margin:34px auto 0;position:relative}
+.cta-btns{display:flex;gap:14px;justify-content:center;margin-top:28px;flex-wrap:wrap;position:relative}
+
+/* ============ footer ============ */
+footer{border-top:1px solid var(--line);padding:52px 0 34px;background:rgba(11,15,20,.6)}
+.foot-grid{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap}
+.foot-brand p{color:var(--dim);font-size:13.5px;margin-top:12px;max-width:300px}
+.foot-cols{display:flex;gap:72px}
+.foot-col b{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);display:block;margin-bottom:14px}
+.foot-col a{display:block;color:var(--muted);font-size:14px;margin-bottom:10px;transition:color .2s}
+.foot-col a:hover{color:var(--green)}
+.foot-bottom{
+  margin-top:44px;padding-top:22px;border-top:1px solid var(--line);
+  display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:12.5px;color:var(--dim);
+}
+
+/* ============ reveal ============ */
+.js .reveal{opacity:0;transform:translateY(20px);transition:opacity .7s ease,transform .7s ease}
+.js .reveal.in{opacity:1;transform:none}
+
+/* ============ responsive ============ */
+@media (max-width:980px){
+  .hero-grid{grid-template-columns:1fr;gap:44px}
+  .dive{grid-template-columns:1fr;gap:36px;padding:56px 0}
+  .dive.flip .dive-copy{order:1}
+  .dive.flip .dive-visual{order:2}
+  .feat-grid{grid-template-columns:repeat(2,1fr)}
+  .steps{grid-template-columns:1fr}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media (max-width:640px){
+  .nav-links a.hide-sm{display:none}
+  .section{padding:72px 0}
+  .feat-grid{grid-template-columns:1fr}
+  .hero{padding-top:calc(var(--nav-h) + 48px)}
+  .term-body{min-height:0;font-size:12px}
+  .install{font-size:11.5px}
+  .foot-cols{gap:40px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<div class="bg-fx" aria-hidden="true"></div>
+
+<!-- ================= nav ================= -->
+<header class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="LetsCode home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#33e68f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l8 7-8 7"/><path d="M14 19h6"/></svg>
+      </span>
+      Lets<em>Code</em>
+    </a>
+    <nav class="nav-links">
+      <a href="#why" class="hide-sm">Why LetsCode</a>
+      <a href="#features" class="hide-sm">Features</a>
+      <a href="#quickstart" class="hide-sm">Quick start</a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ================= hero ================= -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="badge"><span class="dot-live"></span>Open source · CLI-first · MIT</span>
+      <h1>Set the rules.<br><span class="accent">Let it code.</span></h1>
+      <p class="hero-sub">
+        LetsCode is a <strong>lightweight agent harness for your terminal</strong>.
+        It loops any OpenAI-compatible LLM over your tools until the task is done —
+        <strong>sandboxed by rules</strong>, unattended by design, composable like Unix.
+      </p>
+      <div class="install">
+        <span class="prompt">$</span>
+        <code id="installCmd">curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</code>
+        <button class="copy-btn" data-copy-target="installCmd" aria-label="Copy install command">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#quickstart">Quick start →</a>
+        <a class="btn btn-ghost" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">Star on GitHub</a>
+      </div>
+      <p class="hero-note">Python 3.11+ · installs uv if missing · macOS sandbox built-in</p>
+    </div>
+
+    <div class="term reveal" aria-label="Animated LetsCode terminal demo">
+      <div class="term-head">
+        <span class="t-dot r"></span><span class="t-dot y"></span><span class="t-dot g"></span>
+        <span class="term-title">letscode — zsh</span>
+        <button class="term-replay" id="termReplay" aria-label="Replay demo" title="Replay">↻</button>
+      </div>
+      <div class="term-body" id="termBody"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= models ================= -->
+<div class="models reveal">
+  <div class="wrap">
+    <span class="models-label">Loops over any OpenAI-compatible API</span>
+    <span class="model-pill">GLM</span>
+    <span class="model-pill">DeepSeek</span>
+    <span class="model-pill">Qwen</span>
+    <span class="model-pill">GPT</span>
+    <span class="model-pill">Gemini</span>
+    <span class="model-pill">local models</span>
+  </div>
+</div>
+
+<!-- ================= why ================= -->
+<section class="section" id="why">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">Why LetsCode</span>
+      <h2 class="h2">Automation you can actually leave running</h2>
+      <p class="sub">No more step-by-step approvals. Set the rules once and the agent works unattended — overnight refactors, bulk lint fixes, PR auto-review — without going off the rails.</p>
+    </div>
+
+    <!-- dive 1: presets -->
+    <div class="dive reveal">
+      <div class="dive-copy">
+        <h3>True automation, trusted execution</h3>
+        <p>Three security presets cover most cases out of the box, enforced by an
+        <strong>OS-level sandbox</strong> (macOS Seatbelt) — not just prompt promises.
+        Need finer control? Custom rules in <code>config.json</code> tighten or open up any preset, with
+        <strong>most-specific-wins</strong> resolution.</p>
+        <div class="shield-note">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#33e68f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>Secret paths (<code>.ssh/</code> <code>.aws/</code> <code>.gnupg/</code> <code>.env</code>) are blocked on every preset. No exceptions.</span>
+        </div>
+      </div>
+      <div class="dive-visual">
+        <div class="presets">
+          <div class="preset p-safe">
+            <div class="preset-top"><span class="preset-name">--preset safe</span><span class="preset-tag">read-only</span></div>
+            <div class="preset-desc">Global read, writes blocked, commands blocked. CI/CD auto-review, audits.</div>
+            <div class="preset-cmd">$ letscode --preset safe <b>"review PR #142"</b></div>
+          </div>
+          <div class="preset p-default">
+            <div class="preset-top"><span class="preset-name">--preset default</span><span class="preset-tag">workspace</span></div>
+            <div class="preset-desc">Workspace + /tmp writable, whitelisted commands. Overnight refactors.</div>
+            <div class="preset-cmd">$ letscode --preset default <b>"refactor auth/ to async"</b></div>
+          </div>
+          <div class="preset p-risk">
+            <div class="preset-top"><span class="preset-name">--preset risk</span><span class="preset-tag">full access</span></div>
+            <div class="preset-desc">Global read/write, all commands. Full migrations — secrets still denied.</div>
+            <div class="preset-cmd">$ letscode --preset risk <b>"migrate db schema to v2"</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dive 2: agentcard -->
+    <div class="dive flip reveal">
+      <div class="dive-copy">
+        <h3>AgentCard — an agent is a file</h3>
+        <p>Define a ready-to-run agent — tools, MCP servers, skills, permissions — in
+        <strong>one Markdown file</strong>, then run it with <code>--as</code>.
+        No code, no framework. Just a card and a flag.</p>
+        <ul class="dive-list">
+          <li>Project cards in <code>agents/&lt;Name&gt;.md</code> override built-ins</li>
+          <li><code>--list-agents</code> shows every available card</li>
+          <li>Lifecycle hooks: <code>onAgentStart</code> / <code>onAgentEnd</code> shell scripts for orchestration</li>
+        </ul>
+        <p class="card-note">Ships built-in: Explore · Plan · Review · SetupZed · DevHard · Worker · Tester</p>
+      </div>
+      <div class="dive-visual">
+        <div class="code-panel">
+          <div class="term-head">
+            <span class="t-dot r"></span><span class="t-dot y"></span><span class="t-dot g"></span>
+            <span class="term-title">agents/Refactorer.md</span>
+          </div>
+          <div class="code-body">
+<div class="ln c-head">---</div>
+<div class="ln"><span class="c-key">name:</span> <span class="c-str">Refactorer</span></div>
+<div class="ln"><span class="c-key">tools:</span> <span class="c-str">[Read, Edit, Grep, Glob]</span></div>
+<div class="ln"><span class="c-key">mcp_servers:</span> <span class="c-str">[playwright]</span></div>
+<div class="ln"><span class="c-key">skills:</span> <span class="c-str">[refactor]</span></div>
+<div class="ln"><span class="c-key">preset:</span> <span class="c-str">default</span></div>
+<div class="ln c-head">---</div>
+<div class="ln c-comment">You are a refactoring specialist…</div>
+<div class="ln"> </div>
+<div class="ln"><span class="c-comment"># run it:</span></div>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">Refactorer</span> <span class="t-note">"extract a UserService from app.py"</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dive 3: composable -->
+    <div class="dive reveal">
+      <div class="dive-copy">
+        <h3>Composable, Unix-style</h3>
+        <p>Chain agents at the shell with <code>--event-stream</code> JSONL output — pipe-friendly by design.
+        Or let the main agent <strong>spawn sub-agents itself</strong> so the primary context stays clean.</p>
+        <ul class="dive-list">
+          <li>Any workflow you can imagine, built from cards and pipes</li>
+          <li>DevHard orchestrator judges pass/fail by <strong>exit codes</strong>, not LLM self-reports</li>
+        </ul>
+      </div>
+      <div class="dive-visual">
+        <div class="pipeline">
+          <div class="pipe-node n-explore"><b>Explore</b><span>find async funcs</span></div>
+          <div class="pipe-arrow"></div>
+          <div class="pipe-node n-plan"><b>Plan</b><span>draft the plan</span></div>
+          <div class="pipe-arrow"></div>
+          <div class="pipe-node n-review"><b>Review</b><span>review the plan</span></div>
+        </div>
+        <div class="code-panel" style="margin-top:16px">
+          <div class="code-body">
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">Explore</span> <span class="c-flag">--event-stream</span> <span class="t-note">"find all async funcs"</span> <span class="t-dim">\</span></div>
+<div class="ln"><span class="t-dim">  |</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">Plan</span> <span class="c-flag">--event-stream</span> <span class="t-note">"draft refactoring plan"</span> <span class="t-dim">\</span></div>
+<div class="ln"><span class="t-dim">  |</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">Review</span> <span class="t-note">"review the plan"</span></div>
+          </div>
+        </div>
+        <p class="pipe-sub"># or just: letscode "refactor src/ for async — delegate as needed"</p>
+      </div>
+    </div>
+
+    <!-- dive 4: ACP -->
+    <div class="dive flip reveal">
+      <div class="dive-copy">
+        <h3>Plugs into your editor</h3>
+        <p>Need an interactive session? LetsCode speaks the
+        <a href="https://agentclientprotocol.com" target="_blank" rel="noopener" style="color:var(--green);border-bottom:1px dashed rgba(51,230,143,.4)">Agent Client Protocol</a> —
+        the open standard adopted by Zed and a growing ecosystem of editors.
+        <strong>One server, any compatible client, zero lock-in.</strong></p>
+        <div class="acp-points">
+          <div class="acp-point">
+            <span class="acp-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/><path d="m7 14 2 2-2 2"/><path d="M13 18h4"/></svg></span>
+            <span><b>Built-in ACP server</b><span><code>letscode-acp</code> over stdio — any compatible editor plugs right in.</span></span>
+          </div>
+          <div class="acp-point">
+            <span class="acp-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>
+            <span><b>Sessions that survive restarts</b><span>List, load, resume — your history persists on disk.</span></span>
+          </div>
+          <div class="acp-point">
+            <span class="acp-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 8h7"/><path d="M5 12h14"/><path d="M5 16h10"/></svg></span>
+            <span><b>Context management</b><span><code>/compact</code> LLM-summarized compression · <code>/new</code> reset · <code>/undo</code> rollback.</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="dive-visual">
+        <div class="code-panel">
+          <div class="term-head">
+            <span class="t-dot r"></span><span class="t-dot y"></span><span class="t-dot g"></span>
+            <span class="term-title">editor setup</span>
+          </div>
+          <div class="code-body">
+<div class="ln"><span class="c-comment"># Zed — built-in agent support,</span></div>
+<div class="ln"><span class="c-comment"># writes .zed/settings.json for you</span></div>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">SetupZed</span></div>
+<div class="ln"> </div>
+<div class="ln"><span class="c-comment"># JetBrains</span></div>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode</span> <span class="c-flag">--as</span> <span class="c-str">SetupJetbrains</span></div>
+<div class="ln"> </div>
+<div class="ln"><span class="c-comment"># or run the raw server for any ACP client</span></div>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode-acp</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= features ================= -->
+<section class="section" id="features" style="padding-top:0">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">Features</span>
+      <h2 class="h2">Small core. Sharp edges.</h2>
+      <p class="sub">Everything a harness needs, nothing it doesn't. Each capability is a flag, a file, or a line of config.</p>
+    </div>
+    <div class="feat-grid">
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></span>
+        <h4>Any LLM</h4>
+        <p>Any OpenAI-compatible API — GLM, DeepSeek, Qwen, GPT, Gemini, local models. One JSON config.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></span>
+        <h4>Vision proxy</h4>
+        <p>Text-only main model? Set a <code>vision_model</code> and images are auto-routed and described in text.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+        <h4>OS-level sandbox</h4>
+        <p>macOS Seatbelt profiles on every Bash subprocess — <code>safe</code> / <code>default</code> / <code>risk</code>.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6"/><path d="M5 8h14v4a7 7 0 0 1-7 7 7 7 0 0 1-7-7V8Z"/><path d="M12 19v3"/></svg></span>
+        <h4>MCP</h4>
+        <p>Connect stdio / HTTP / SSE MCP servers; tools are auto-discovered and merged into the loop.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg></span>
+        <h4>Skills</h4>
+        <p>Your team's commit / review workflow as a <code>SKILL.md</code> — invoke it with a single command.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v3a6 6 0 0 0 6 6h3"/></svg></span>
+        <h4>Sub-agents</h4>
+        <p>Delegate searches and sub-tasks to spawned agents so the main context stays clean.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span>
+        <h4>Workspace-aware</h4>
+        <p><code>--workspace</code> binds logs, sandbox boundaries, and env context (cwd / git / platform) automatically.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h6"/></svg></span>
+        <h4>AGENTS.md rules</h4>
+        <p>Follows the <a href="https://agents.md" target="_blank" rel="noopener" style="color:var(--green)">AGENTS.md</a> convention — coding standards take effect automatically.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h13"/></svg></span>
+        <h4>JSON event stream</h4>
+        <p><code>--event-stream</code> emits structured JSONL — pipe-friendly, IDE-friendly, replay-friendly.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M21 20H3"/></svg></span>
+        <h4>Usage stats</h4>
+        <p>Per-turn token footer with cache hit rate — <span style="font-family:var(--mono);font-size:.9em">2.7k tokens (99%cached)</span>.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20"/></svg></span>
+        <h4>IDE-integrated <span class="tag-acp">ACP</span></h4>
+        <p><code>letscode-acp</code> ships a stdio ACP server; any compatible editor plugs right in.</p>
+      </div>
+      <div class="feat reveal">
+        <span class="feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+        <h4>Sessions &amp; context <span class="tag-acp">ACP</span></h4>
+        <p>Sessions persist across restarts. <code>/compact</code> · <code>/new</code> · <code>/undo</code> manage context.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= stats ================= -->
+<section class="stats">
+  <div class="wrap stats-grid reveal">
+    <div class="stat"><b>~2.1k</b><span>lines of Python core — readable in an afternoon</span></div>
+    <div class="stat"><b>3</b><span>security presets, enforced by the OS</span></div>
+    <div class="stat"><b>7</b><span>built-in agent cards, extensible with one file</span></div>
+    <div class="stat"><b>MIT</b><span>license, zero lock-in, open protocol</span></div>
+  </div>
+</section>
+
+<!-- ================= quickstart ================= -->
+<section class="section" id="quickstart">
+  <div class="wrap">
+    <div class="reveal">
+      <span class="kicker">Quick start</span>
+      <h2 class="h2">From curl to shipping in three steps</h2>
+    </div>
+    <div class="steps">
+      <div class="step reveal">
+        <span class="step-num">01 / INSTALL</span>
+        <h4>One-liner</h4>
+        <p>Installs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener" style="color:var(--green)">uv</a> if missing, then LetsCode as a global tool.</p>
+        <div class="step-code">
+          <button class="copy-btn" data-copy-text="curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh" aria-label="Copy install command">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">curl -fsSL https://raw.githubusercontent.com/</span></div>
+<div class="ln"><span class="c-cmd">    letscan/letscode/main/scripts/install.sh | sh</span></div>
+        </div>
+      </div>
+      <div class="step reveal">
+        <span class="step-num">02 / CONFIGURE</span>
+        <h4>Point it at any LLM</h4>
+        <p>Copy the template, drop in an API key. Env vars override everything.</p>
+        <div class="step-code">
+          <button class="copy-btn" data-copy-text="cp config.example.json config.json" aria-label="Copy config command">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">cp config.example.json config.json</span></div>
+<div class="ln"><span class="c-comment"># { "default_model": "glm-5-turbo",</span></div>
+<div class="ln"><span class="c-comment">#   "providers": { "zhipu": { "api_key": "…" } } }</span></div>
+        </div>
+      </div>
+      <div class="step reveal">
+        <span class="step-num">03 / RUN</span>
+        <h4>Say what you want</h4>
+        <p>The loop handles the rest — LLM → tools → feedback, until done.</p>
+        <div class="step-code">
+          <button class="copy-btn" data-copy-text='letscode "add a /health endpoint to app.py"' aria-label="Copy run command">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+<div class="ln"><span class="t-prompt">$</span> <span class="c-cmd">letscode</span> <span class="t-note">"add a /health endpoint to app.py"</span></div>
+<div class="ln"><span class="t-ok">✓</span> <span class="t-dim">Done — 3 turns · 4 tool calls</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="req">Requires <b style="color:var(--text)">Python 3.11+</b> · or clone &amp; <code style="font-family:var(--mono);color:var(--green)">uv tool install git+https://github.com/letscan/letscode.git</code></p>
+  </div>
+</section>
+
+<!-- ================= cta ================= -->
+<section class="section cta">
+  <div class="cta-glow" aria-hidden="true"></div>
+  <div class="wrap reveal">
+    <h2>Ready?<br>Set the rules. <span class="accent">Let it code.</span></h2>
+    <p class="sub">Free and open source under MIT. Your terminal is about to get a teammate.</p>
+    <div class="install">
+      <span class="prompt">$</span>
+      <code id="installCmd2">curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</code>
+      <button class="copy-btn" data-copy-target="installCmd2" aria-label="Copy install command">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+    </div>
+    <div class="cta-btns">
+      <a class="btn btn-primary" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">Star on GitHub</a>
+      <a class="btn btn-ghost" href="https://github.com/letscan/letscode#readme" target="_blank" rel="noopener">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= footer ================= -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <a class="brand" href="#top">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#33e68f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l8 7-8 7"/><path d="M14 19h6"/></svg>
+          </span>
+          Lets<em>Code</em>
+        </a>
+        <p>A lightweight, CLI-first AI coding agent harness. Loops over any OpenAI-compatible LLM, calling tools until the task is done.</p>
+      </div>
+      <div class="foot-cols">
+        <div class="foot-col">
+          <b>Project</b>
+          <a href="https://github.com/letscan/letscode" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/letscan/letscode#readme" target="_blank" rel="noopener">Documentation</a>
+          <a href="https://github.com/letscan/letscode/blob/main/scripts/install.sh" target="_blank" rel="noopener">Install script</a>
+          <a href="https://github.com/letscan/letscode/issues" target="_blank" rel="noopener">Issues</a>
+        </div>
+        <div class="foot-col">
+          <b>Ecosystem</b>
+          <a href="https://agentclientprotocol.com" target="_blank" rel="noopener">Agent Client Protocol</a>
+          <a href="https://agents.md" target="_blank" rel="noopener">AGENTS.md convention</a>
+          <a href="https://zed.dev/blog/acp-registry" target="_blank" rel="noopener">Zed ACP registry</a>
+          <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener">uv</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 letscan · MIT License</span>
+      <span>built for the terminal ❯_</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  document.documentElement.classList.add("js");
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- nav shadow ---------- */
+  var nav = document.getElementById("nav");
+  var onScroll = function(){ nav.classList.toggle("scrolled", window.scrollY > 8); };
+  window.addEventListener("scroll", onScroll, {passive:true});
+  onScroll();
+
+  /* ---------- reveal on scroll ---------- */
+  var revealEls = document.querySelectorAll(".reveal");
+  if ("IntersectionObserver" in window && !reduceMotion) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, {threshold:.12});
+    revealEls.forEach(function(el){ io.observe(el); });
+  } else {
+    revealEls.forEach(function(el){ el.classList.add("in"); });
+  }
+
+  /* ---------- copy buttons ---------- */
+  function copyText(text, btn){
+    var done = function(){
+      btn.classList.add("copied");
+      var prev = btn.title;
+      btn.title = "Copied!";
+      setTimeout(function(){ btn.classList.remove("copied"); btn.title = prev; }, 1600);
+    };
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch(e){}
+      document.body.removeChild(ta);
+      done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  }
+  document.querySelectorAll(".copy-btn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      var text = btn.getAttribute("data-copy-text");
+      if (!text) {
+        var t = document.getElementById(btn.getAttribute("data-copy-target"));
+        text = t ? t.textContent : "";
+      }
+      copyText(text, btn);
+    });
+  });
+
+  /* ---------- hero terminal animation ---------- */
+  var CMD = 'letscode --preset default "refactor auth/ to async"';
+  var SCRIPT = [
+    {h:'<span class="t-ok">✓</span> <span class="t-dim">Read   </span> <span class="t-file">auth/session.py</span> <span class="t-dim">(214 lines)</span>', d:520},
+    {h:'<span class="t-ok">✓</span> <span class="t-dim">Read   </span> <span class="t-file">auth/routes.py</span> <span class="t-dim">(96 lines)</span>', d:430},
+    {h:'<span class="t-ok">✓</span> <span class="t-dim">Edit   </span> <span class="t-file">auth/session.py</span> <span class="t-dim">(14 lines → 22 lines)</span>', d:600},
+    {h:'<span class="t-ok">✓</span> <span class="t-dim">Edit   </span> <span class="t-file">auth/routes.py</span> <span class="t-dim">(8 lines → 12 lines)</span>', d:470},
+    {h:'<span class="t-prompt">$</span> <span class="t-cmdline">pytest tests/auth -q</span>', d:640},
+    {h:'  <span class="t-ok">47 passed</span> <span class="t-dim">in 2.31s</span>', d:420},
+    {h:'<span class="t-ok">✓ Done</span> <span class="t-dim">— 5 turns · 5 tool calls · 41s</span>', d:560},
+    {h:'  <span class="t-stat">12.4k tokens · 96% cached</span>', d:300}
+  ];
+  var termBody = document.getElementById("termBody");
+  var playing = false;
+
+  function finalState(){
+    var html = '<div class="ln"><span class="t-prompt">❯ </span><span class="t-cmd">' + CMD + '</span></div>';
+    SCRIPT.forEach(function(s){ html += '<div class="ln">' + s.h + '</div>'; });
+    html += '<div class="ln"><span class="t-prompt">❯ </span><span class="caret"></span></div>';
+    termBody.innerHTML = html;
+  }
+
+  function play(){
+    if (playing) return;
+    if (reduceMotion) { finalState(); return; }
+    playing = true;
+    termBody.innerHTML = '<div class="ln"><span class="t-prompt">❯ </span><span class="t-cmd" id="typeLine"></span><span class="caret" id="typeCaret"></span></div>';
+    var typeLine = document.getElementById("typeLine");
+    var i = 0;
+    (function typeChar(){
+      if (i <= CMD.length) {
+        typeLine.textContent = CMD.slice(0, i);
+        i++;
+        setTimeout(typeChar, 26 + Math.random() * 30);
+      } else {
+        setTimeout(runLines, 380);
+      }
+    })();
+    function runLines(){
+      var caret = document.getElementById("typeCaret");
+      if (caret) caret.remove();
+      var idx = 0;
+      (function next(){
+        if (idx < SCRIPT.length) {
+          var div = document.createElement("div");
+          div.className = "ln";
+          div.innerHTML = SCRIPT[idx].h;
+          termBody.appendChild(div);
+          var d = SCRIPT[idx].d;
+          idx++;
+          setTimeout(next, d);
+        } else {
+          var end = document.createElement("div");
+          end.className = "ln";
+          end.innerHTML = '<span class="t-prompt">❯ </span><span class="caret"></span>';
+          termBody.appendChild(end);
+          playing = false;
+        }
+      })();
+    }
+  }
+
+  document.getElementById("termReplay").addEventListener("click", function(){
+    playing = false;
+    play();
+  });
+
+  /* hero terminal is always above the fold — start directly */
+  if (reduceMotion) {
+    finalState();
+  } else {
+    setTimeout(play, 600);
+  }
+})();
+</script>
+
+</body>
+</html>

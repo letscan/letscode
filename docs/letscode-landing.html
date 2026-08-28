@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LetsCode — The CLI-first AI coding agent</title>
+<meta name="description" content="LetsCode is a lightweight, CLI-first AI coding agent harness. Rules-driven, fully customizable, and built for the terminal — loops over any OpenAI-compatible LLM, calling tools until the task is done." />
+<meta property="og:title" content="LetsCode — The CLI-first AI coding agent" />
+<meta property="og:description" content="A lightweight Python harness that loops over any OpenAI-compatible LLM, calling tools until the task is done. Rules-driven, fully customizable, no lock-in." />
+<meta property="og:type" content="website" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#06080d;
+  --bg-2:#0a0e16;
+  --surface:#0e1420;
+  --surface-2:#121a29;
+  --border:rgba(148,163,184,.14);
+  --border-strong:rgba(148,163,184,.24);
+  --text:#e9eff8;
+  --muted:#95a3b8;
+  --muted-2:#6b7a90;
+  --accent:#2ee6a8;
+  --accent-dim:rgba(46,230,168,.14);
+  --accent-2:#8b7cf6;
+  --accent-2-dim:rgba(139,124,246,.14);
+  --amber:#f4c150;
+  --amber-dim:rgba(244,193,80,.14);
+  --red:#ff6b81;
+  --radius:16px;
+  --radius-sm:10px;
+  --maxw:1120px;
+  --font-display:"Space Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"SFMono-Regular","SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;scroll-padding-top:84px}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--font-display);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  line-height:1.6;
+  overflow-x:hidden;
+}
+a{color:inherit;text-decoration:none}
+::selection{background:var(--accent);color:#04100a}
+.container{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+/* ambient background */
+.bg-orbs{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
+.bg-orbs::before,.bg-orbs::after{content:"";position:absolute;border-radius:50%;filter:blur(120px);opacity:.5}
+.bg-orbs::before{width:560px;height:560px;top:-180px;left:-120px;background:radial-gradient(circle,rgba(46,230,168,.22),transparent 60%)}
+.bg-orbs::after{width:620px;height:620px;top:10%;right:-180px;background:radial-gradient(circle,rgba(139,124,246,.22),transparent 60%)}
+.grid-bg{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background-image:linear-gradient(rgba(148,163,184,.05) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(148,163,184,.05) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,#000 0%,transparent 70%);
+}
+
+/* nav */
+.nav{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(14px);
+  background:rgba(6,8,13,.72);
+  border-bottom:1px solid var(--border);
+}
+.nav-inner{display:flex;align-items:center;justify-content:space-between;height:68px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:19px;letter-spacing:-.02em}
+.logo .mark{
+  width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#04100a;
+  font-family:var(--font-mono);font-weight:700;font-size:14px;
+}
+.logo .ver{font-size:11px;color:var(--muted-2);font-family:var(--font-mono);font-weight:500;margin-left:2px}
+.nav-links{display:flex;align-items:center;gap:28px}
+.nav-links a{color:var(--muted);font-size:14.5px;font-weight:500;transition:color .15s}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{display:flex;align-items:center;gap:12px}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);
+  font-size:14px;font-weight:600;padding:10px 18px;border-radius:10px;
+  cursor:pointer;border:1px solid transparent;transition:all .15s;white-space:nowrap;
+}
+.btn.primary{background:var(--accent);color:#04100a;box-shadow:0 8px 28px -8px rgba(46,230,168,.6)}
+.btn.primary:hover{transform:translateY(-1px);box-shadow:0 12px 34px -8px rgba(46,230,168,.7)}
+.btn.ghost{border-color:var(--border-strong);color:var(--text);background:transparent}
+.btn.ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn.ghost-2{border-color:var(--border);color:var(--muted);background:rgba(148,163,184,.05)}
+.btn.ghost-2:hover{color:var(--text);border-color:var(--border-strong)}
+.btn svg{width:16px;height:16px}
+.burger{display:none;background:none;border:none;cursor:pointer;padding:6px}
+.burger span{display:block;width:22px;height:2px;background:var(--text);margin:5px 0;border-radius:2px;transition:.2s}
+.burger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+.burger.open span:nth-child(2){opacity:0}
+.burger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+.mobile-menu{display:none}
+
+/* hero */
+.hero{position:relative;padding:96px 0 72px}
+.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:12.5px;
+  color:var(--muted);background:var(--surface);border:1px solid var(--border);
+  padding:6px 12px;border-radius:999px;margin-bottom:22px;
+}
+.eyebrow .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.hero h1{
+  font-size:clamp(40px,6vw,64px);line-height:1.04;letter-spacing:-.035em;font-weight:700;
+  margin-bottom:22px;
+}
+.hero h1 .grad{background:linear-gradient(100deg,var(--accent),#7ef0c6 40%,var(--accent-2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero-sub{color:var(--muted);font-size:18px;line-height:1.65;max-width:520px;margin-bottom:30px}
+.hero-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:30px}
+.install-row{
+  display:flex;align-items:center;gap:0;max-width:520px;
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;
+}
+.install-row .shell{flex:1;padding:14px 16px;font-family:var(--font-mono);font-size:13px;color:var(--muted);overflow:hidden}
+.install-row .shell .prompt{color:var(--accent)}
+.install-row .copybtn{
+  border:none;background:var(--surface-2);color:var(--text);padding:14px 16px;cursor:pointer;
+  font-family:var(--font-mono);font-size:12.5px;font-weight:600;border-left:1px solid var(--border);
+  transition:background .15s;white-space:nowrap;
+}
+.install-row .copybtn:hover{background:var(--accent);color:#04100a}
+.hero-meta{display:flex;align-items:center;gap:18px;flex-wrap:wrap;color:var(--muted-2);font-size:13px;font-family:var(--font-mono)}
+.hero-meta span{display:flex;align-items:center;gap:6px}
+.hero-meta .ok{color:var(--accent)}
+
+/* terminal */
+.terminal{
+  background:#0a0e17;border:1px solid var(--border-strong);border-radius:16px;
+  box-shadow:0 30px 80px -30px rgba(0,0,0,.7),0 0 0 1px rgba(46,230,168,.05);
+  overflow:hidden;font-family:var(--font-mono);font-size:13px;
+}
+.term-head{display:flex;align-items:center;gap:8px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border)}
+.term-head .dots{display:flex;gap:6px}
+.term-head .dots i{width:11px;height:11px;border-radius:50%}
+.term-head .dots i:nth-child(1){background:#ff5f57}
+.term-head .dots i:nth-child(2){background:#febc2e}
+.term-head .dots i:nth-child(3){background:#28c840}
+.term-title{margin-left:6px;color:var(--muted-2);font-size:11.5px;letter-spacing:.04em}
+.term-body{padding:18px 20px;min-height:250px;line-height:1.75}
+.term-line{min-height:22px;white-space:pre-wrap;word-break:break-word}
+.term-line .p{color:var(--accent);font-weight:600}
+.term-line.cmd{color:var(--text)}
+.term-line.ok{color:var(--accent)}
+.term-line.act{color:var(--accent-2)}
+.term-line.dim{color:var(--muted-2)}
+.cursor{display:inline-block;width:9px;height:17px;background:var(--accent);vertical-align:text-bottom;margin-left:2px;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* section base */
+section{padding:80px 0}
+.sec-head{max-width:660px;margin-bottom:52px}
+.kicker{font-family:var(--font-mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:14px;display:flex;align-items:center;gap:10px}
+.kicker::before{content:"";width:22px;height:1px;background:var(--accent)}
+.sec-head h2{font-size:clamp(28px,4vw,42px);letter-spacing:-.03em;line-height:1.12;font-weight:700;margin-bottom:14px}
+.sec-head p{color:var(--muted);font-size:17px}
+
+/* providers strip */
+.providers{padding:0 0 80px}
+.providers p{text-align:center;color:var(--muted-2);font-size:13px;font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;margin-bottom:24px}
+.pills{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+.pill{
+  font-family:var(--font-mono);font-size:14px;color:var(--muted);padding:8px 16px;
+  border:1px solid var(--border);border-radius:999px;background:var(--surface);transition:all .15s;
+}
+.pill:hover{color:var(--text);border-color:var(--border-strong);transform:translateY(-2px)}
+
+/* bento */
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:18px}
+.card{
+  background:linear-gradient(180deg,var(--surface),var(--surface-2));
+  border:1px solid var(--border);border-radius:var(--radius);padding:28px;
+  position:relative;overflow:hidden;transition:transform .2s,border-color .2s;
+}
+.card:hover{transform:translateY(-3px);border-color:var(--border-strong)}
+.card .glow{position:absolute;width:200px;height:200px;border-radius:50%;filter:blur(70px);opacity:.16;pointer-events:none}
+.card h3{font-size:20px;font-weight:700;letter-spacing:-.01em;margin-bottom:10px;display:flex;align-items:center;gap:10px}
+.card p{color:var(--muted);font-size:14.5px}
+.card .ico{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;flex-shrink:0}
+.card .ico svg{width:20px;height:20px}
+.b1{grid-column:span 4}.b2{grid-column:span 2}
+.b3{grid-column:span 2}.b4{grid-column:span 4}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chip{font-family:var(--font-mono);font-size:12px;padding:5px 11px;border-radius:7px;border:1px solid var(--border)}
+.chip.safe{color:var(--accent);border-color:rgba(46,230,168,.3);background:var(--accent-dim)}
+.chip.def{color:var(--accent-2);border-color:rgba(139,124,246,.3);background:var(--accent-2-dim)}
+.chip.risk{color:var(--amber);border-color:rgba(244,193,80,.3);background:var(--amber-dim)}
+.minicode{
+  margin-top:18px;background:#0a0e17;border:1px solid var(--border);border-radius:10px;
+  padding:14px 16px;font-family:var(--font-mono);font-size:12px;line-height:1.8;color:var(--muted);overflow-x:auto;
+}
+.minicode .c{color:var(--muted-2)}
+.minicode .a{color:var(--accent)}
+.minicode .v{color:var(--accent-2)}
+.minicode .k{color:var(--amber)}
+.editors{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.editor{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:13px;color:var(--text);background:var(--surface);border:1px solid var(--border);padding:8px 13px;border-radius:9px}
+.editor svg{width:15px;height:15px;color:var(--accent)}
+
+/* features */
+.features-tabs{display:inline-flex;gap:6px;background:var(--surface);border:1px solid var(--border);padding:5px;border-radius:12px;margin-bottom:32px}
+.features-tabs button{
+  font-family:var(--font-display);font-size:14px;font-weight:600;color:var(--muted);
+  background:none;border:none;padding:9px 20px;border-radius:8px;cursor:pointer;transition:all .15s;
+}
+.features-tabs button.active{background:var(--accent);color:#04100a}
+.feat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.feat-panel{display:none}
+.feat-panel.active{display:grid}
+.feat{
+  background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;
+  transition:border-color .15s,transform .15s;
+}
+.feat:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+.feat .fi{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;margin-bottom:14px}
+.feat .fi svg{width:17px;height:17px}
+.feat h4{font-size:15.5px;font-weight:600;margin-bottom:7px;letter-spacing:-.01em}
+.feat p{color:var(--muted);font-size:13.5px;line-height:1.55}
+.fi.green{background:var(--accent-dim);color:var(--accent)}
+.fi.violet{background:var(--accent-2-dim);color:var(--accent-2)}
+.fi.amber{background:var(--amber-dim);color:var(--amber)}
+
+/* security */
+.security{background:linear-gradient(180deg,var(--bg-2),var(--bg))}
+.sec-split{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start}
+.preset-table{width:100%;border-collapse:collapse;font-size:14px}
+.preset-table th{font-family:var(--font-mono);font-size:12px;color:var(--muted-2);text-align:left;padding:10px 14px;border-bottom:1px solid var(--border)}
+.preset-table td{padding:14px;border-bottom:1px solid var(--border);color:var(--muted)}
+.preset-table td:first-child{font-family:var(--font-mono);color:var(--text);font-weight:600}
+.preset-table tr:last-child td{border-bottom:none}
+.tag{display:inline-block;font-family:var(--font-mono);font-size:11.5px;padding:3px 9px;border-radius:6px}
+.tag.ok{color:var(--accent);background:var(--accent-dim)}
+.tag.no{color:var(--red);background:rgba(255,107,129,.12)}
+.tag.mid{color:var(--amber);background:var(--amber-dim)}
+
+/* install */
+.install-cards{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.step-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px}
+.step-card .num{font-family:var(--font-mono);color:var(--accent);font-weight:700;font-size:13px}
+.step-card h3{font-size:17px;margin:8px 0 6px}
+.step-card p{color:var(--muted);font-size:14px;margin-bottom:16px}
+.codeblock{
+  background:#0a0e17;border:1px solid var(--border);border-radius:10px;
+  font-family:var(--font-mono);font-size:12.5px;line-height:1.9;color:var(--muted);
+  padding:16px;overflow-x:auto;position:relative;
+}
+.codeblock .c{color:var(--muted-2)}
+.codeblock .a{color:var(--accent)}
+.codeblock .v{color:var(--accent-2)}
+.copy-btn{
+  position:absolute;top:10px;right:10px;border:1px solid var(--border);background:var(--surface);
+  color:var(--muted);font-family:var(--font-mono);font-size:11.5px;padding:5px 10px;border-radius:7px;cursor:pointer;transition:all .15s;
+}
+.copy-btn:hover{color:var(--text);border-color:var(--border-strong)}
+.copy-btn.copied{color:var(--accent);border-color:rgba(46,230,168,.4)}
+
+/* reference table */
+.ref-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.ref-wrap table{width:100%;border-collapse:collapse;font-size:14px}
+.ref-wrap th{font-family:var(--font-mono);font-size:12px;color:var(--muted-2);text-align:left;padding:14px 18px;background:var(--surface-2);border-bottom:1px solid var(--border)}
+.ref-wrap td{padding:12px 18px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:top}
+.ref-wrap td:first-child{font-family:var(--font-mono);color:var(--text);white-space:nowrap}
+.ref-wrap tr:last-child td{border-bottom:none}
+
+/* footer */
+footer{border-top:1px solid var(--border);padding:48px 0 64px;margin-top:40px}
+.foot-inner{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.foot-left{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:14px}
+.foot-left .logo{font-size:16px}
+.foot-right{display:flex;gap:20px;color:var(--muted-2);font-size:14px}
+.foot-right a:hover{color:var(--text)}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
+.reveal.visible{opacity:1;transform:none}
+
+@media(max-width:960px){
+  .hero-grid{grid-template-columns:1fr;gap:48px}
+  .bento{grid-template-columns:1fr 1fr}
+  .b1,.b4{grid-column:span 2}
+  .b2,.b3{grid-column:span 1}
+  .feat-grid{grid-template-columns:repeat(3,1fr)}
+  .sec-split{grid-template-columns:1fr}
+}
+@media(max-width:700px){
+  .nav-links,.nav-cta{display:none}
+  .burger{display:block}
+  .mobile-menu{display:flex;flex-direction:column;gap:4px;padding:0 24px 18px;background:rgba(6,8,13,.96)}
+  .mobile-menu a{padding:12px 0;color:var(--muted);border-bottom:1px solid var(--border);font-weight:500}
+  .mobile-menu a:hover{color:var(--text)}
+  .feat-grid{grid-template-columns:1fr 1fr}
+  .install-cards{grid-template-columns:1fr}
+  .bento{grid-template-columns:1fr}
+  .b1,.b2,.b3,.b4{grid-column:span 1}
+  .hero{padding:72px 0 56px}
+}
+@media(max-width:460px){.feat-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="bg-orbs"></div>
+<div class="grid-bg"></div>
+
+<nav class="nav">
+  <div class="container nav-inner">
+    <a class="logo" href="#top">
+      <span class="mark">&gt;_</span> letscode <span class="ver">v0.4.1</span>
+    </a>
+    <div class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="#security">Security</a>
+      <a href="#install">Install</a>
+      <a href="#reference">CLI</a>
+    </div>
+    <div class="nav-cta">
+      <a class="btn ghost" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+      <a class="btn primary" href="#install">Install</a>
+    </div>
+    <button class="burger" id="burger" aria-label="Menu"><span></span><span></span><span></span></button>
+  </div>
+  <div class="mobile-menu" id="mobileMenu">
+    <a href="#why">Why</a>
+    <a href="#features">Features</a>
+    <a href="#security">Security</a>
+    <a href="#install">Install</a>
+    <a href="#reference">CLI</a>
+    <a href="https://github.com/letscan/letscode" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+
+<div id="top"></div>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="container hero-grid">
+    <div>
+      <div class="eyebrow"><span class="dot"></span> terminal-first · rules-driven · open source</div>
+      <h1>The CLI-first AI coding agent, <span class="grad">built for the terminal.</span></h1>
+      <p class="hero-sub">A lightweight Python harness that loops over any OpenAI-compatible LLM — calling tools until the job is done. Rules-driven, fully customizable, and no lock-in.</p>
+      <div class="hero-actions">
+        <a class="btn primary" href="#install">Get started</a>
+        <a class="btn ghost-2" href="#why">See it in action</a>
+      </div>
+      <div class="install-row">
+        <span class="shell"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</span>
+        <button class="copybtn" data-copy-install>Copy</button>
+      </div>
+      <div class="hero-meta" style="margin-top:20px">
+        <span><span class="ok">✓</span> Python 3.11+</span>
+        <span class="ok">✓</span>
+        <span>macOS Seatbelt sandbox</span>
+        <span class="ok">✓</span>
+        <span>MIT · v0.4.1</span>
+      </div>
+    </div>
+    <div class="terminal">
+      <div class="term-head">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="term-title">letscode — zsh</span>
+      </div>
+      <div class="term-body" id="termBody"></div>
+    </div>
+  </div>
+</header>
+
+<!-- PROVIDERS -->
+<div class="providers">
+  <div class="container">
+    <p>One CLI · any OpenAI-compatible model</p>
+    <div class="pills">
+      <span class="pill">GLM</span><span class="pill">DeepSeek</span><span class="pill">Qwen</span>
+      <span class="pill">GPT</span><span class="pill">Gemini</span><span class="pill">Claude</span>
+      <span class="pill">Ollama</span><span class="pill">Local models</span>
+    </div>
+  </div>
+</div>
+
+<!-- WHY -->
+<section id="why">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">Why LetsCode</div>
+      <h2>Automation you can actually trust</h2>
+      <p>Set the rules once. Then let the agent run unattended — overnight refactors, bulk fixes, PR review — without watching over its shoulder.</p>
+    </div>
+    <div class="bento">
+      <div class="card b1 reveal">
+        <div class="glow" style="background:var(--accent);top:-40px;right:-20px"></div>
+        <div class="ico" style="background:var(--accent-dim);color:var(--accent)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>True automation, trusted execution</h3>
+        <p>No more step-by-step approvals. Three sandbox presets cover most cases out of the box — and custom rules tighten or open up any of them.</p>
+        <div class="chips">
+          <span class="chip safe">safe · read-only</span>
+          <span class="chip def">default · workspace</span>
+          <span class="chip risk">risk · full access</span>
+        </div>
+        <div class="minicode">
+<span class="c"># read-only CI/CD review</span>
+letscode --preset <span class="a">safe</span> <span class="v">"review PR #142"</span>
+<span class="c"># overnight refactor</span>
+letscode --preset <span class="a">default</span> <span class="v">"refactor auth/ to async"</span>
+<span class="c"># full migration</span>
+letscode --preset <span class="a">risk</span> <span class="v">"migrate db schema to v2"</span>
+        </div>
+      </div>
+
+      <div class="card b2 reveal">
+        <div class="glow" style="background:var(--accent-2);top:-40px;left:-20px"></div>
+        <div class="ico" style="background:var(--accent-2-dim);color:var(--accent-2)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M8 15h4"/></svg>
+        </div>
+        <h3>AgentCard</h3>
+        <p>Define a ready-to-use agent — tools, MCP, skills, permissions — in one Markdown file, run it with <code style="font-family:var(--font-mono);color:var(--accent)">--as</code>.</p>
+        <div class="minicode" style="margin-top:12px">
+<span class="c"># agents/Refactorer.md</span>
+<span class="k">name</span>: Refactorer
+<span class="k">tools</span>: [Read, Edit, Grep, Glob]
+<span class="k">mcp_servers</span>: [playwright]
+<span class="k">preset</span>: default
+        </div>
+      </div>
+
+      <div class="card b3 reveal">
+        <div class="glow" style="background:var(--accent);top:-30px;right:-30px"></div>
+        <div class="ico" style="background:var(--accent-dim);color:var(--accent)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 6h6M6 9v6M18 9v6M15 18H9"/></svg>
+        </div>
+        <h3>Composable agents</h3>
+        <p>Chain agents at the shell, Unix-style — or let the main agent delegate sub-agents itself.</p>
+        <div class="minicode" style="margin-top:12px">
+letscode <span class="a">--as</span> Explore ... \
+  | letscode <span class="a">--as</span> Plan ... \
+  | letscode <span class="a">--as</span> Review ...
+        </div>
+      </div>
+
+      <div class="card b4 reveal">
+        <div class="glow" style="background:var(--accent-2);top:-40px;left:20%"></div>
+        <div class="ico" style="background:var(--accent-2-dim);color:var(--accent-2)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16M6 16l-2 4M18 16l2 4M8 4v12M16 4v12M8 4h8"/></svg>
+        </div>
+        <h3>Plug into any editor — zero lock-in</h3>
+        <p>LetsCode speaks the Agent Client Protocol, the open standard adopted by Zed and a growing ecosystem. One server, any compatible client.</p>
+        <div class="editors">
+          <span class="editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l6 16 2-6 6-2z"/></svg> Zed</span>
+          <span class="editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8"/></svg> JetBrains</span>
+          <span class="editor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg> Any ACP client</span>
+        </div>
+        <div class="minicode" style="margin-top:16px">
+<span class="c"># Zed — auto-writes .zed/settings.json</span>
+letscode --as <span class="a">SetupZed</span>
+<span class="c"># JetBrains</span>
+letscode --as <span class="a">SetupJetbrains</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" style="background:linear-gradient(180deg,var(--bg),var(--bg-2))">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">Features</div>
+      <h2>Everything in one lean harness</h2>
+      <p>No framework, no lock-in. Just a small, well-architected Python tool that composes with everything you already use.</p>
+    </div>
+    <div class="features-tabs reveal">
+      <button class="active" data-tab="cli">CLI</button>
+      <button data-tab="acp">Editor · ACP</button>
+    </div>
+
+    <div class="feat-panel feat-grid active reveal" id="panel-cli">
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg></div><h4>Any LLM</h4><p>Any OpenAI-compatible API — GLM, DeepSeek, Qwen, GPT, Gemini, local models.</p></div>
+      <div class="feat"><div class="fi violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8a4 4 0 014-4h12a4 4 0 014 4v8a4 4 0 01-4 4H6a4 4 0 01-4-4z"/><circle cx="12" cy="12" r="3"/></svg></div><h4>Vision proxy</h4><p>Text-only models read images too — set a <code style="font-family:var(--font-mono);color:var(--accent-2)">vision_model</code> and images are described as text.</p></div>
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg></div><h4>OS-level sandbox</h4><p>macOS Seatbelt profiles with three presets: safe / default / risk.</p></div>
+      <div class="feat"><div class="fi violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="8" rx="2"/><path d="M12 8v8"/></svg></div><h4>MCP support</h4><p>Connect stdio / HTTP / SSE servers — tools auto-discovered and merged in.</p></div>
+      <div class="feat"><div class="fi amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg></div><h4>Skills</h4><p>Write your team's commit / review workflow as a SKILL.md, invoke with one command.</p></div>
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="2"/><circle cx="17" cy="7" r="2"/><circle cx="7" cy="17" r="2"/><path d="M10.5 8.5L15 7.5M9 11l-2.5 4M11 21l6-8"/></svg></div><h4>Sub-agents</h4><p>Delegate searches and sub-tasks to a spawned agent — keep the main context clean.</p></div>
+      <div class="feat"><div class="fi violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h7M4 14h4"/></svg></div><h4>Workspace-aware</h4><p><code style="font-family:var(--font-mono);color:var(--accent-2)">--workspace</code> binds cwd, git, shell and context automatically.</p></div>
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></div><h4>Project rules</h4><p>Follows the AGENTS.md convention — standards and workflow rules apply automatically.</p></div>
+      <div class="feat"><div class="fi amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div><h4>JSON event stream</h4><p><code style="font-family:var(--font-mono);color:var(--accent)">--event-stream</code> emits structured JSONL — pipe-friendly.</p></div>
+      <div class="feat"><div class="fi violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l3-8 4 16 3-8h4"/></svg></div><h4>Usage stats</h4><p>Per-turn token footer with live cache hit rate — <code style="font-family:var(--font-mono);color:var(--accent-2)">99% cached</code>.</p></div>
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-9-9"/><path d="M21 3v6h-6"/></svg></div><h4>Prompt caching</h4><p>auto / explicit / none modes tuned per provider for maximum cache hits.</p></div>
+      <div class="feat"><div class="fi amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><h4>Resume sessions</h4><p>Continue where you left off with <code style="font-family:var(--font-mono);color:var(--accent)">--feed</code>.</p></div>
+    </div>
+
+    <div class="feat-panel feat-grid reveal" id="panel-acp">
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg></div><h4>IDE-integrated</h4><p><code style="font-family:var(--font-mono);color:var(--accent)">letscode-acp</code> ships a built-in ACP server over stdio — any compatible editor plugs right in.</p></div>
+      <div class="feat"><div class="fi violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="M5 5l14 14M19 5L5 19"/></svg></div><h4>Session management</h4><p>Sessions persist across restarts — list, load, resume.</p></div>
+      <div class="feat"><div class="fi amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 10h8M8 14h5"/></svg></div><h4>Context management</h4><p><code style="font-family:var(--font-mono);color:var(--accent)">/compact</code> · <code style="font-family:var(--font-mono);color:var(--accent)">/new</code> · <code style="font-family:var(--font-mono);color:var(--accent)">/undo</code> for a clean, focused session.</p></div>
+      <div class="feat"><div class="fi green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="6" cy="12" r="2"/><circle cx="18" cy="12" r="2"/></svg></div><h4>Open standard</h4><p>Built on the Agent Client Protocol — zero vendor lock-in, one server for every client.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- SECURITY -->
+<section class="security" id="security">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">Security</div>
+      <h2>Sandboxed by default, adjustable to the job</h2>
+      <p>Three presets map directly to how much trust a task needs. Secret paths are always blocked — on every preset.</p>
+    </div>
+    <div class="sec-split">
+      <div class="reveal">
+        <div class="ref-wrap">
+          <table class="preset-table">
+            <thead><tr><th>Preset</th><th>Read</th><th>Write</th><th>Commands</th></tr></thead>
+            <tbody>
+              <tr><td>safe</td><td><span class="tag ok">Global</span></td><td><span class="tag no">Blocked</span></td><td><span class="tag no">Blocked</span></td></tr>
+              <tr><td>default</td><td><span class="tag ok">Global</span></td><td><span class="tag mid">Workspace + /tmp</span></td><td><span class="tag mid">Whitelisted</span></td></tr>
+              <tr><td>risk</td><td><span class="tag ok">Global</span></td><td><span class="tag ok">Global</span></td><td><span class="tag ok">All allowed</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="color:var(--muted-2);font-size:13px;margin-top:14px;font-family:var(--font-mono)">Secrets (.ssh/ · .aws/ · .gnupg/ · .env) blocked on all presets.</p>
+      </div>
+      <div class="reveal">
+        <div class="codeblock">
+          <button class="copy-btn" data-copy-text='{"rules":{"allowRead":["src/**","tests/**"],"denyWrite":["secrets/**"],"allowCmd":["ls","cat","git"],"denyCmd":["rm -rf"]}}'>Copy</button>
+<span class="c"># config.json — most-specific-wins</span>
+{
+  <span class="a">"rules"</span>: {
+    <span class="a">"allowRead"</span>: [<span class="v">"src/**"</span>, <span class="v">"tests/**"</span>],
+    <span class="a">"denyWrite"</span>: [<span class="v">"secrets/**"</span>],
+    <span class="a">"allowCmd"</span>: [<span class="v">"ls"</span>, <span class="v">"cat"</span>, <span class="v">"git"</span>],
+    <span class="a">"denyCmd"</span>: [<span class="v">"rm -rf"</span>]
+  }
+}
+        </div>
+        <p style="color:var(--muted);font-size:14px;margin-top:16px">A more specific allow (e.g. <code style="font-family:var(--font-mono);color:var(--accent)">plan.md</code>) overrides a broader deny — so a card can pair <code style="font-family:var(--font-mono);color:var(--accent)">safe</code> with a narrow write carve-out.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section id="install">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">Install</div>
+      <h2>One line. Then go.</h2>
+      <p>Requires Python 3.11+. The one-liner installs <a href="https://docs.astral.sh/uv/" target="_blank" rel="noopener" style="color:var(--accent)">uv</a> if missing, then LetsCode as a global tool.</p>
+    </div>
+    <div class="install-cards">
+      <div class="step-card reveal">
+        <div class="num">01 · One-liner</div>
+        <h3>Install globally</h3>
+        <p>Bootstraps uv and installs <code style="font-family:var(--font-mono);color:var(--accent)">letscode</code>.</p>
+        <div class="codeblock">
+          <button class="copy-btn" data-copy-text="curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh">Copy</button>
+          <span class="c">$</span> curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh
+        </div>
+      </div>
+      <div class="step-card reveal">
+        <div class="num">02 · Manual</div>
+        <h3>Clone & install</h3>
+        <p>For development, or install from the repo as a global tool.</p>
+        <div class="codeblock">
+          <button class="copy-btn" data-copy-text="git clone https://github.com/letscan/letscode.git && cd letscode && uv sync">Copy</button>
+<span class="c">$</span> git clone https://github.com/letscan/letscode.git
+<span class="c">$</span> cd letscode
+<span class="c">$</span> uv sync            <span class="c"># development</span>
+<span class="c"># — or —</span>
+<span class="c">$</span> uv tool install git+https://github.com/letscan/letscode.git
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CONFIG -->
+<section style="background:linear-gradient(180deg,var(--bg),var(--bg-2))">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">Configuration</div>
+      <h2>Point it at any model</h2>
+      <p>Create a config from the template, drop in your API key, and you're running. Works with any OpenAI-compatible API.</p>
+    </div>
+    <div class="sec-split">
+      <div class="codeblock reveal">
+        <button class="copy-btn" data-copy-text='{"default_model":"glm-5-turbo","providers":{"zhipu":{"base_url":"https://open.bigmodel.cn/api/coding/paas/v4","api_key":"YOUR_API_KEY","models":[{"model":"glm-5-turbo","max_tokens":200000}]}}}'>Copy</button>
+<span class="c"># config.json</span>
+{
+  <span class="a">"default_model"</span>: <span class="v">"glm-5-turbo"</span>,
+  <span class="a">"providers"</span>: {
+    <span class="a">"zhipu"</span>: {
+      <span class="a">"base_url"</span>: <span class="v">"https://open.bigmodel.cn/api/coding/paas/v4"</span>,
+      <span class="a">"api_key"</span>: <span class="v">"YOUR_API_KEY"</span>,
+      <span class="a">"models"</span>: [
+        { <span class="a">"model"</span>: <span class="v">"glm-5-turbo"</span>, <span class="a">"max_tokens"</span>: <span class="v">200000</span> }
+      ]
+    }
+  }
+}
+      </div>
+      <div class="codeblock reveal">
+        <button class="copy-btn" data-copy-text="export OPENAI_API_KEY=&quot;YOUR_API_KEY&quot;&#10;export OPENAI_BASE_URL=&quot;https://open.bigmodel.cn/api/coding/paas/v4&quot;">Copy</button>
+<span class="c"># env vars override the file</span>
+<span class="a">export</span> OPENAI_API_KEY=<span class="v">"YOUR_API_KEY"</span>
+<span class="a">export</span> OPENAI_BASE_URL=<span class="v">"https://open.bigmodel.cn/api/coding/paas/v4"</span>
+
+<span class="c"># then: name a task</span>
+letscode <span class="v">"add a /health endpoint to app.py"</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- REFERENCE -->
+<section id="reference">
+  <div class="container">
+    <div class="sec-head reveal">
+      <div class="kicker">CLI reference</div>
+      <h2>Simple surface, deep control</h2>
+    </div>
+    <div class="ref-wrap reveal">
+      <table>
+        <thead><tr><th>Option</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>-c, --config</td><td>Config file path (default: config.json)</td></tr>
+          <tr><td>-m, --model</td><td>Model ID (overrides config default)</td></tr>
+          <tr><td>-w, --workspace</td><td>Working directory (default: cwd)</td></tr>
+          <tr><td>--max-turns</td><td>Max conversation turns</td></tr>
+          <tr><td>--preset</td><td>Security preset: safe / default / risk</td></tr>
+          <tr><td>--no-sandbox</td><td>Disable macOS sandbox</td></tr>
+          <tr><td>--no-mcp</td><td>Skip MCP server connections</td></tr>
+          <tr><td>-v, --verbose</td><td>Show tool call details</td></tr>
+          <tr><td>--models</td><td>List available models from config</td></tr>
+          <tr><td>--list-agents</td><td>List available agent cards</td></tr>
+          <tr><td>--as &lt;name&gt;</td><td>Run as a specific agent card</td></tr>
+          <tr><td>--event-stream</td><td>Output as JSONL event stream</td></tr>
+          <tr><td>--feed</td><td>Resume from a previous session log</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container foot-inner">
+    <div class="foot-left">
+      <span class="logo"><span class="mark">&gt;_</span> letscode</span>
+      <span style="color:var(--muted-2)">· MIT licensed · v0.4.1</span>
+    </div>
+    <div class="foot-right">
+      <a href="https://github.com/letscan/letscode" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://agentclientprotocol.com" target="_blank" rel="noopener">ACP</a>
+      <a href="https://agents.md" target="_blank" rel="noopener">AGENTS.md</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---- mobile nav ----
+  const burger = document.getElementById('burger');
+  const mobileMenu = document.getElementById('mobileMenu');
+  if (burger) {
+    burger.addEventListener('click', () => {
+      burger.classList.toggle('open');
+      const open = mobileMenu.style.display === 'flex';
+      mobileMenu.style.display = open ? 'none' : 'flex';
+    });
+    mobileMenu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobileMenu.style.display = 'none';
+      burger.classList.remove('open');
+    }));
+  }
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 700) { mobileMenu.style.display = 'none'; burger.classList.remove('open'); }
+  });
+
+  // ---- terminal typing ----
+  const termBody = document.getElementById('termBody');
+  const lines = [
+    { cls: 'cmd', text: '$ letscode "add a /health endpoint to app.py"' },
+    { cls: 'dim', text: '' },
+    { cls: 'act', text: '  ◔ reading app.py …' },
+    { cls: 'act', text: '  ◔ writing /health endpoint …' },
+    { cls: 'ok',  text: '  ✓ GET /health returns 200' },
+    { cls: 'ok',  text: '  ✓ tests added' },
+    { cls: 'dim', text: '' },
+    { cls: 'ok',  text: '  done · 2 files changed · 3.1s' },
+    { cls: 'dim', text: '  tokens: 2.7k (99% cached)' },
+  ];
+
+  function typeLine(line, cb){
+    const el = document.createElement('div');
+    el.className = 'term-line ' + line.cls;
+    el.innerHTML = line.cls === 'cmd'
+      ? '<span class="p">$</span> '
+      : '';
+    const span = document.createElement('span');
+    el.appendChild(span);
+    termBody.appendChild(el);
+    let i = 0;
+    const text = line.text;
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    el.appendChild(cursor);
+    function step(){
+      if (i < text.length){
+        span.textContent += text[i];
+        i++;
+        setTimeout(step, line.cls === 'cmd' ? 28 : 14);
+      } else {
+        cursor.remove();
+        if (line.cls === 'dim' && text === '') { cb(); return; }
+        setTimeout(cb, line.cls === 'cmd' ? 380 : 120);
+      }
+    }
+    step();
+  }
+
+  function run(){
+    termBody.innerHTML = '';
+    let idx = 0;
+    function next(){
+      if (idx >= lines.length){ return; }
+      typeLine(lines[idx], () => { idx++; next(); });
+    }
+    next();
+  }
+  run();
+
+  // ---- reveal on scroll ----
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting){ e.target.classList.add('visible'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  // ---- feature tabs ----
+  const tabs = document.querySelectorAll('.features-tabs button');
+  tabs.forEach(btn => btn.addEventListener('click', () => {
+    tabs.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const target = btn.dataset.tab;
+    document.querySelectorAll('.feat-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('panel-' + target).classList.add('active');
+  }));
+
+  // ---- copy to clipboard ----
+  function copyText(text){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise((resolve, reject) => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); resolve(); } catch (e){ reject(e); }
+      document.body.removeChild(ta);
+    });
+  }
+  document.querySelectorAll('[data-copy-text]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      copyText(btn.dataset.copyText).then(() => {
+        const old = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = old; btn.classList.remove('copied'); }, 1600);
+      });
+    });
+  });
+  const installCopy = document.querySelector('[data-copy-install]');
+  if (installCopy){
+    installCopy.addEventListener('click', () => {
+      copyText('curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh').then(() => {
+        const old = installCopy.textContent;
+        installCopy.textContent = 'Copied!';
+        setTimeout(() => { installCopy.textContent = old; }, 1600);
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>
