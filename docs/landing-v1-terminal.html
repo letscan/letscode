@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LetsCode — A lightweight AI coding agent harness for the terminal</title>
+<meta name="description" content="LetsCode is a lightweight, CLI-first AI coding agent harness. Rules-driven, fully customizable, loops over any OpenAI-compatible LLM until the task is done.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0e0a;
+  --bg-soft:#0e140e;
+  --panel:#111a11;
+  --panel-2:#0c120c;
+  --line:#1f2d1f;
+  --line-soft:#17241a;
+  --text:#e8f0e6;
+  --text-dim:#93a694;
+  --text-faint:#5f7263;
+  --accent:#b6f04b;
+  --accent-2:#8fd92a;
+  --accent-soft:rgba(182,240,75,.12);
+  --cyan:#6ee7d8;
+  --amber:#f5c46b;
+  --red:#f06a6a;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --radius:14px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--sans);
+  line-height:1.6;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--accent);color:#0a0e0a}
+a{color:inherit;text-decoration:none}
+code,kbd{font-family:var(--mono)}
+
+/* ---------- backdrop ---------- */
+.backdrop{position:fixed;inset:0;z-index:-2;pointer-events:none}
+.backdrop::before{
+  content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(900px 500px at 75% -10%, rgba(182,240,75,.09), transparent 60%),
+    radial-gradient(700px 500px at 10% 20%, rgba(110,231,216,.05), transparent 60%),
+    var(--bg);
+}
+.grid-lines{
+  position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(182,240,75,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(182,240,75,.035) 1px, transparent 1px);
+  background-size:56px 56px;
+  mask-image:radial-gradient(ellipse 90% 60% at 50% 0%, black 20%, transparent 75%);
+  -webkit-mask-image:radial-gradient(ellipse 90% 60% at 50% 0%, black 20%, transparent 75%);
+}
+
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+
+/* ---------- nav ---------- */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:50;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(10,14,10,.72);
+  border-bottom:1px solid var(--line-soft);
+}
+.nav-inner{max-width:1120px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:28px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:-.01em}
+.logo-mark{
+  width:28px;height:28px;border-radius:8px;flex-shrink:0;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-weight:700;font-size:14px;color:#0a0e0a;
+  box-shadow:0 0 18px rgba(182,240,75,.35);
+}
+.logo em{font-style:normal;color:var(--accent)}
+.nav-links{display:flex;gap:24px;margin-left:auto;font-size:14px;color:var(--text-dim)}
+.nav-links a:hover{color:var(--accent);transition:color .2s}
+.nav-cta{
+  font-family:var(--mono);font-size:13px;font-weight:500;
+  padding:8px 16px;border:1px solid var(--line);border-radius:9px;
+  display:flex;align-items:center;gap:8px;color:var(--text);
+  transition:border-color .2s, background .2s;
+}
+.nav-cta:hover{border-color:var(--accent);background:var(--accent-soft)}
+.nav-cta svg{width:15px;height:15px}
+@media(max-width:760px){.nav-links{display:none}}
+
+/* ---------- hero ---------- */
+.hero{padding:158px 0 72px;position:relative}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:12.5px;color:var(--text-dim);
+  border:1px solid var(--line);border-radius:999px;padding:6px 14px;
+  background:rgba(17,26,17,.6);margin-bottom:26px;
+}
+.hero-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hero h1{
+  font-size:clamp(38px,6.2vw,66px);
+  font-weight:800;letter-spacing:-.035em;line-height:1.06;
+  max-width:840px;
+}
+.hero h1 .hl{
+  color:var(--accent);
+  text-shadow:0 0 44px rgba(182,240,75,.35);
+}
+.hero .sub{
+  margin-top:22px;max-width:640px;
+  font-size:clamp(15.5px,1.9vw,18px);color:var(--text-dim);line-height:1.7;
+}
+.hero .sub code{color:var(--cyan);font-size:.92em;background:rgba(110,231,216,.08);padding:2px 7px;border-radius:6px}
+
+/* terminal */
+.terminal{
+  margin-top:44px;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:linear-gradient(180deg,#0d130d,#0a0f0a);
+  box-shadow:0 30px 80px -30px rgba(0,0,0,.8), 0 0 0 1px rgba(182,240,75,.04), 0 0 60px -20px rgba(182,240,75,.12);
+  overflow:hidden;
+}
+.term-bar{
+  display:flex;align-items:center;gap:8px;
+  padding:12px 16px;border-bottom:1px solid var(--line-soft);
+  background:rgba(17,26,17,.55);
+}
+.term-dot{width:11px;height:11px;border-radius:50%}
+.term-dot:nth-child(1){background:#f06a6a}
+.term-dot:nth-child(2){background:#f5c46b}
+.term-dot:nth-child(3){background:#5ecf72}
+.term-title{margin-left:auto;margin-right:auto;font-family:var(--mono);font-size:12px;color:var(--text-faint);transform:translateX(-26px)}
+.term-body{
+  font-family:var(--mono);font-size:clamp(12.5px,1.5vw,14px);
+  padding:22px 22px 26px;line-height:1.85;min-height:330px;
+  white-space:pre-wrap;word-break:break-word;
+}
+.term-body .p{color:var(--accent)}
+.term-body .cmd{color:var(--text);font-weight:500}
+.term-body .dim{color:var(--text-faint)}
+.term-body .ok{color:var(--accent)}
+.term-body .cy{color:var(--cyan)}
+.term-body .am{color:var(--amber)}
+.caret{display:inline-block;width:8px;height:16px;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* hero actions */
+.hero-actions{margin-top:34px;display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.install-chip{
+  display:flex;align-items:center;gap:12px;
+  font-family:var(--mono);font-size:13.5px;
+  border:1px solid var(--line);border-radius:10px;
+  background:var(--panel-2);padding:12px 16px;
+  max-width:100%;overflow:hidden;
+}
+.install-chip .prompt{color:var(--accent);flex-shrink:0}
+.install-chip .cmd-text{color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.copy-btn{
+  flex-shrink:0;background:none;border:1px solid var(--line);border-radius:7px;
+  color:var(--text-dim);cursor:pointer;padding:6px 9px;
+  font-family:var(--mono);font-size:11.5px;
+  transition:all .2s;display:flex;align-items:center;gap:6px;
+}
+.copy-btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn{
+  display:inline-flex;align-items:center;gap:9px;
+  font-weight:600;font-size:14.5px;padding:12px 22px;border-radius:10px;
+  transition:transform .15s, box-shadow .2s;
+}
+.btn-primary{
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  color:#0a0e0a;
+  box-shadow:0 8px 30px -8px rgba(182,240,75,.5);
+}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 36px -8px rgba(182,240,75,.6)}
+.btn-ghost{border:1px solid var(--line);color:var(--text);background:rgba(17,26,17,.5)}
+.btn-ghost:hover{border-color:var(--accent);transform:translateY(-2px)}
+.hero-meta{margin-top:26px;display:flex;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:12px;color:var(--text-faint)}
+.hero-meta span{border:1px solid var(--line-soft);border-radius:6px;padding:4px 10px;background:rgba(12,18,12,.5)}
+.hero-meta b{color:var(--text-dim);font-weight:500}
+
+/* ---------- sections ---------- */
+section{padding:88px 0;position:relative}
+.sec-head{max-width:680px;margin-bottom:52px}
+.sec-kicker{
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:14px;display:flex;align-items:center;gap:10px;
+}
+.sec-kicker::before{content:"";width:22px;height:1px;background:var(--accent)}
+.sec-head h2{font-size:clamp(27px,3.6vw,38px);font-weight:800;letter-spacing:-.025em;line-height:1.15}
+.sec-head p{margin-top:14px;color:var(--text-dim);font-size:16px}
+
+/* pillcards */
+.pillcards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+@media(max-width:900px){.pillcards{grid-template-columns:1fr}}
+.pcard{
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:linear-gradient(180deg,var(--panel),var(--panel-2));
+  padding:28px 26px;position:relative;overflow:hidden;
+  transition:border-color .25s, transform .25s;
+}
+.pcard:hover{border-color:rgba(182,240,75,.45);transform:translateY(-4px)}
+.pcard::after{
+  content:"";position:absolute;top:-60px;right:-60px;width:160px;height:160px;border-radius:50%;
+  background:radial-gradient(circle,rgba(182,240,75,.12),transparent 70%);
+  opacity:0;transition:opacity .3s;
+}
+.pcard:hover::after{opacity:1}
+.pcard .num{font-family:var(--mono);font-size:12px;color:var(--text-faint);letter-spacing:.1em}
+.pcard h3{margin-top:12px;font-size:20px;font-weight:700;letter-spacing:-.01em}
+.pcard p{margin-top:10px;font-size:14.5px;color:var(--text-dim);line-height:1.7}
+.pcard p code, .feat p code{color:var(--cyan);font-size:.9em;background:rgba(110,231,216,.08);padding:1px 6px;border-radius:5px}
+.pcard .mini-term{
+  margin-top:18px;border:1px solid var(--line-soft);border-radius:9px;
+  background:#080c08;padding:12px 14px;
+  font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--text-dim);
+  overflow-x:auto;white-space:pre;
+}
+.mini-term .p{color:var(--accent)}
+.mini-term .dim{color:var(--text-faint)}
+
+/* bento */
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:16px}
+@media(max-width:900px){.bento{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.bento{grid-template-columns:1fr}}
+.feat{
+  grid-column:span 2;
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel-2);padding:24px;
+  transition:border-color .25s;
+}
+.feat:hover{border-color:rgba(182,240,75,.4)}
+.feat.wide{grid-column:span 3}
+@media(max-width:900px){.feat,.feat.wide{grid-column:span 2}}
+@media(max-width:560px){.feat,.feat.wide{grid-column:span 1}}
+.feat .ico{
+  width:36px;height:36px;border-radius:9px;
+  background:var(--accent-soft);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--mono);font-weight:700;font-size:15px;margin-bottom:14px;
+}
+.feat h3{font-size:16.5px;font-weight:700}
+.feat p{margin-top:7px;font-size:13.5px;color:var(--text-dim);line-height:1.65}
+
+/* split showcase */
+.split{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center}
+@media(max-width:880px){.split{grid-template-columns:1fr;gap:32px}}
+.split.rev>.split-text{order:2}
+@media(max-width:880px){.split.rev>.split-text{order:0}}
+.split-text h2{font-size:clamp(24px,3vw,32px);font-weight:800;letter-spacing:-.02em;line-height:1.2}
+.split-text p{margin-top:16px;color:var(--text-dim);font-size:15.5px;line-height:1.75}
+.split-text ul{margin-top:18px;list-style:none;display:flex;flex-direction:column;gap:10px}
+.split-text li{display:flex;gap:10px;font-size:14.5px;color:var(--text-dim)}
+.split-text li::before{content:"▸";color:var(--accent);flex-shrink:0}
+.split-text li code, .split-text p code{color:var(--cyan);font-size:.9em;background:rgba(110,231,216,.08);padding:1px 6px;border-radius:5px}
+.codecard{
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:#080c08;overflow:hidden;
+  box-shadow:0 24px 60px -30px rgba(0,0,0,.7);
+}
+.codecard .bar{
+  padding:10px 16px;border-bottom:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:12px;color:var(--text-faint);
+  display:flex;align-items:center;gap:10px;background:rgba(17,26,17,.4);
+}
+.codecard .bar .fname{color:var(--text-dim)}
+.codecard pre{
+  padding:18px 20px;font-family:var(--mono);font-size:12.8px;line-height:1.75;
+  overflow-x:auto;color:var(--text-dim);
+}
+.tk-k{color:var(--accent)}      /* keyword / frontmatter keys */
+.tk-s{color:var(--amber)}       /* strings */
+.tk-c{color:var(--text-faint)}  /* comments */
+.tk-f{color:var(--cyan)}        /* functions/flags */
+.tk-n{color:#d8b4fe}            /* numbers / names */
+.tk-t{color:var(--text)}        /* plain text */
+
+/* presets table */
+.ptable{width:100%;border-collapse:collapse;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;font-size:14px;display:block;overflow-x:auto}
+.ptable table{width:100%;border-collapse:collapse;min-width:560px}
+.ptable th{
+  text-align:left;font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-faint);padding:14px 20px;border-bottom:1px solid var(--line);
+  background:rgba(17,26,17,.5);font-weight:500;
+}
+.ptable td{padding:15px 20px;border-bottom:1px solid var(--line-soft);color:var(--text-dim)}
+.ptable tr:last-child td{border-bottom:none}
+.ptable tr:hover td{background:rgba(182,240,75,.03)}
+.ptable .pname{font-family:var(--mono);font-weight:700;font-size:13.5px}
+.pname.safe{color:var(--cyan)} .pname.default{color:var(--accent)} .pname.risk{color:var(--red)}
+.tag{font-family:var(--mono);font-size:12px;border-radius:6px;padding:3px 9px;border:1px solid var(--line)}
+.tag.ok{color:var(--accent);border-color:rgba(182,240,75,.35);background:var(--accent-soft)}
+.tag.no{color:var(--red);border-color:rgba(240,106,106,.3);background:rgba(240,106,106,.08)}
+.tag.mid{color:var(--amber);border-color:rgba(245,196,107,.3);background:rgba(245,196,107,.08)}
+.ptable-note{margin-top:16px;font-size:13.5px;color:var(--text-faint);font-family:var(--mono)}
+
+/* models marquee */
+.marquee{
+  overflow:hidden;border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+  padding:20px 0;position:relative;
+  mask-image:linear-gradient(90deg,transparent,black 12%,black 88%,transparent);
+  -webkit-mask-image:linear-gradient(90deg,transparent,black 12%,black 88%,transparent);
+}
+.marquee-track{display:flex;gap:44px;width:max-content;animation:scroll 26s linear infinite;font-family:var(--mono);font-size:15px;color:var(--text-faint)}
+.marquee-track span{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.marquee-track i{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.6;font-style:normal}
+@keyframes scroll{to{transform:translateX(-50%)}}
+
+/* install */
+.install-final{text-align:center;max-width:760px;margin:0 auto}
+.install-final .big-term{
+  margin-top:36px;text-align:left;
+  border:1px solid var(--line);border-radius:var(--radius);background:#080c08;
+  box-shadow:0 30px 70px -30px rgba(0,0,0,.8), 0 0 50px -18px rgba(182,240,75,.14);
+}
+.install-final .big-term .term-body{min-height:0;padding:20px 22px}
+.steps{margin-top:40px;display:grid;grid-template-columns:repeat(3,1fr);gap:16px;text-align:left}
+@media(max-width:760px){.steps{grid-template-columns:1fr}}
+.step{border:1px solid var(--line);border-radius:12px;padding:20px;background:var(--panel-2)}
+.step .n{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.1em}
+.step h4{margin-top:8px;font-size:15px;font-weight:700}
+.step p{margin-top:6px;font-size:13px;color:var(--text-dim)}
+.step code{color:var(--cyan);font-size:.92em}
+
+/* footer */
+footer{border-top:1px solid var(--line-soft);padding:44px 0 60px}
+.foot-inner{display:flex;flex-wrap:wrap;gap:24px;align-items:center;justify-content:space-between}
+.foot-inner .left{display:flex;align-items:center;gap:12px;color:var(--text-dim);font-size:14px}
+.foot-links{display:flex;gap:22px;font-size:13.5px;color:var(--text-faint);font-family:var(--mono)}
+.foot-links a:hover{color:var(--accent)}
+.foot-note{margin-top:26px;font-size:12.5px;color:var(--text-faint);font-family:var(--mono)}
+
+/* reveal on scroll */
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .7s cubic-bezier(.2,.7,.3,1), transform .7s cubic-bezier(.2,.7,.3,1)}
+.reveal.in{opacity:1;transform:none}
+
+/* toast */
+.toast{
+  position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(20px);
+  background:var(--panel);border:1px solid var(--accent);color:var(--accent);
+  font-family:var(--mono);font-size:13px;padding:10px 20px;border-radius:10px;
+  opacity:0;pointer-events:none;transition:all .3s;z-index:99;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="backdrop"><div class="grid-lines"></div></div>
+
+<nav>
+  <div class="nav-inner">
+    <a class="logo" href="#top">
+      <span class="logo-mark">&gt;_</span>
+      <span>Lets<em>Code</em></span>
+    </a>
+    <div class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#features">Features</a>
+      <a href="#agentcards">AgentCards</a>
+      <a href="#security">Security</a>
+      <a href="#install">Install</a>
+    </div>
+    <a class="nav-cta" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="hero-badge"><span class="dot"></span> v0.4.0 &nbsp;·&nbsp; MIT License &nbsp;·&nbsp; Python 3.11+</div>
+    <h1>The AI coding agent that <span class="hl">finishes the job</span>.</h1>
+    <p class="sub">
+      LetsCode is a lightweight, CLI-first agent harness. Rules-driven, fully customizable,
+      built for the terminal — it loops over any OpenAI-compatible LLM, calling tools until
+      the task is done. No IDE required. No babysitting required.
+    </p>
+
+    <div class="terminal" id="heroTerm">
+      <div class="term-bar">
+        <span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+        <span class="term-title">letscode — zsh</span>
+      </div>
+      <div class="term-body" id="termBody"></div>
+    </div>
+
+    <div class="hero-actions">
+      <div class="install-chip">
+        <span class="prompt">$</span>
+        <span class="cmd-text">curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</span>
+        <button class="copy-btn" data-copy="curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          copy
+        </button>
+      </div>
+      <a class="btn btn-primary" href="#install">Get started →</a>
+      <a class="btn btn-ghost" href="https://github.com/letscan/letscode" target="_blank" rel="noopener">★ Star on GitHub</a>
+    </div>
+
+    <div class="hero-meta">
+      <span>models <b>GLM · DeepSeek · Qwen · GPT · local</b></span>
+      <span>protocol <b>MCP · ACP</b></span>
+      <span>sandbox <b>macOS Seatbelt</b></span>
+      <span>license <b>MIT</b></span>
+    </div>
+  </div>
+</header>
+
+<!-- ============ MARQUEE ============ -->
+<div class="marquee">
+  <div class="marquee-track" id="marqueeTrack">
+    <span><i></i>GLM-5-Turbo</span><span><i></i>DeepSeek</span><span><i></i>Qwen</span>
+    <span><i></i>GPT</span><span><i></i>Gemini</span><span><i></i>Local models</span>
+    <span><i></i>Any OpenAI-compatible API</span><span><i></i>MCP stdio / HTTP / SSE</span>
+    <span><i></i>Agent Client Protocol</span><span><i></i>Zed · JetBrains</span>
+  </div>
+</div>
+
+<!-- ============ WHY ============ -->
+<section id="why">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">Why LetsCode</div>
+      <h2>Trust it with the boring parts.<br>All night, if you want.</h2>
+      <p>Most agents stop to ask permission every thirty seconds. LetsCode runs unattended inside boundaries you define — overnight refactors, bulk lint fixes, PR auto-review — without going off the rails.</p>
+    </div>
+    <div class="pillcards">
+      <div class="pcard reveal">
+        <div class="num">01</div>
+        <h3>True automation, trusted execution</h3>
+        <p>Three security presets — <code>safe</code>, <code>default</code>, <code>risk</code> — plus fine-grained custom rules. Set the rules once; the agent works alone, safely.</p>
+        <div class="mini-term"><span class="p">$</span> letscode --preset safe <span class="dim">\</span>
+    "review PR #142"     <span class="dim"># read-only</span>
+<span class="p">$</span> letscode --preset risk <span class="dim">\</span>
+    "migrate db schema"  <span class="dim"># full access</span></div>
+      </div>
+      <div class="pcard reveal">
+        <div class="num">02</div>
+        <h3>AgentCard: tailor and run</h3>
+        <p>Define a ready-to-use agent — tools, MCP servers, skills, permissions — in one Markdown file. No code, no framework. Just a card and a <code>--as</code> flag.</p>
+        <div class="mini-term"><span class="p">$</span> letscode --as Review <span class="dim">\</span>
+    "review tools/runner.py"
+<span class="p">$</span> letscode --list-agents</div>
+      </div>
+      <div class="pcard reveal">
+        <div class="num">03</div>
+        <h3>Unix-composable multi-agent</h3>
+        <p>Chain agents at the shell with pipes, or let the main agent delegate sub-agents itself. Build any workflow you can imagine — Explore → Plan → Review.</p>
+        <div class="mini-term"><span class="p">$</span> letscode --as Explore <span class="dim">\</span>
+    --event-stream "..." <span class="dim">| \</span>
+  letscode --as Plan "..."</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURES BENTO ============ -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">Features</div>
+      <h2>Small harness. Serious machinery.</h2>
+      <p>Everything an agent needs to operate on a real codebase — nothing it doesn't.</p>
+    </div>
+    <div class="bento">
+      <div class="feat wide reveal">
+        <div class="ico">⌁</div>
+        <h3>Any LLM</h3>
+        <p>Any OpenAI-compatible API: GLM, DeepSeek, Qwen, GPT, Gemini, or local models. Switch with one config line — env vars override the file when you need them to.</p>
+      </div>
+      <div class="feat wide reveal">
+        <div class="ico">⛨</div>
+        <h3>OS-level sandbox</h3>
+        <p>macOS Seatbelt profiles enforce the boundary at the kernel level, not by prompting. Secret paths (<code>.ssh/</code>, <code>.aws/</code>, <code>.env</code>) are blocked on every preset.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">◈</div>
+        <h3>MCP built in</h3>
+        <p>Connect stdio / HTTP / SSE MCP servers. Tools are auto-discovered and merged in at startup.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">✦</div>
+        <h3>Skills</h3>
+        <p>Write your team's commit or review workflow as a <code>SKILL.md</code>, invoke it with a single command.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">⑂</div>
+        <h3>Sub-agents</h3>
+        <p>Delegate searches and sub-tasks to a spawned agent so the main context stays clean.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">◉</div>
+        <h3>Vision proxy</h3>
+        <p>Text-only model? Set a <code>vision_model</code> and images are auto-routed and described in text.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">⌗</div>
+        <h3>JSON event stream</h3>
+        <p><code>--event-stream</code> emits structured JSONL — pipe it into other tools, dashboards, or agents.</p>
+      </div>
+      <div class="feat reveal">
+        <div class="ico">≡</div>
+        <h3>Session &amp; context control</h3>
+        <p>Sessions persist across restarts. <code>/compact</code>, <code>/new</code>, <code>/undo</code> keep context in shape.</p>
+      </div>
+      <div class="feat wide reveal">
+        <div class="ico">✎</div>
+        <h3>Project rules that stick</h3>
+        <p>Follows the <code>AGENTS.md</code> convention — your coding standards and workflow rules take effect automatically, every run. Workspace-aware: logs, sandbox boundaries, and environment context bind to <code>--workspace</code>.</p>
+      </div>
+      <div class="feat wide reveal">
+        <div class="ico">↯</div>
+        <h3>Prompt-cache aware</h3>
+        <p>Auto mode for DeepSeek / GLM ≥ 4.6, explicit <code>cache_control</code> markers for Qwen / DashScope. The per-turn footer shows tokens with cache hit rate — <code>2.7k tokens (99% cached)</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AGENTCARDS ============ -->
+<section id="agentcards">
+  <div class="wrap">
+    <div class="split">
+      <div class="split-text reveal">
+        <div class="sec-kicker">AgentCards</div>
+        <h2>One Markdown file.<br>One flag. A specialist.</h2>
+        <p>An AgentCard bundles a system prompt, tool allowlist, MCP servers, skills, and a security preset. Drop it in <code>agents/</code>, run it with <code>--as</code>. Ships with four built-in cards: <code>Explore</code>, <code>Plan</code>, <code>Review</code>, <code>SetupZed</code>.</p>
+        <ul>
+          <li>No code, no framework — frontmatter + prose is the whole spec</li>
+          <li>Pair <code>preset: safe</code> with a narrow <code>allowWrite</code> to carve out exactly one writable file</li>
+          <li>Project-level cards sit next to your code, versioned with it</li>
+        </ul>
+      </div>
+      <div class="codecard reveal">
+        <div class="bar"><span class="fname">agents/Refactorer.md</span><span style="margin-left:auto">agent card</span></div>
+<pre><span class="tk-k">---
+name:</span> <span class="tk-n">Refactorer</span>
+<span class="tk-k">tools:</span> <span class="tk-s">[Read, Edit, Grep, Glob]</span>
+<span class="tk-k">mcp_servers:</span> <span class="tk-s">[playwright]</span>
+<span class="tk-k">skills:</span> <span class="tk-s">[refactor]</span>
+<span class="tk-k">preset:</span> <span class="tk-n">default</span>
+<span class="tk-k">---</span>
+
+<span class="tk-t">You are a refactoring specialist.
+Extract services, remove duplication,
+never change behavior.</span>
+
+<span class="tk-c"># then:</span>
+<span class="tk-f">$ letscode --as Refactorer \</span>
+<span class="tk-t">    "extract a UserService from app.py"</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ACP / EDITOR ============ -->
+<section>
+  <div class="wrap">
+    <div class="split rev">
+      <div class="split-text reveal">
+        <div class="sec-kicker">Editor integration</div>
+        <h2>CLI-first, not CLI-only.</h2>
+        <p>When you want an interactive session, LetsCode speaks the <code>Agent Client Protocol</code> — the open standard adopted by Zed and a growing ecosystem of editors. One server, any compatible client, zero lock-in.</p>
+        <ul>
+          <li><code>letscode-acp</code> ships a built-in ACP server over stdio</li>
+          <li>Sessions persist across restarts — list, load, resume</li>
+          <li>Built-in setup cards write your editor config for you</li>
+        </ul>
+      </div>
+      <div class="codecard reveal">
+        <div class="bar"><span class="fname">terminal</span><span style="margin-left:auto">acp</span></div>
+<pre><span class="tk-c"># Zed — built-in agent writes .zed/settings.json for you</span>
+<span class="tk-f">$ letscode --as SetupZed</span>
+
+<span class="tk-c"># JetBrains</span>
+<span class="tk-f">$ letscode --as SetupJetbrains</span>
+
+<span class="tk-c"># or run the ACP server directly</span>
+<span class="tk-f">$ letscode-acp -c config.json</span>
+<span class="tk-t">  → speaking ACP over stdio …</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SECURITY ============ -->
+<section id="security">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-kicker">Security</div>
+      <h2>Boundaries enforced by the OS,<br>not by the prompt.</h2>
+      <p>Presets cover the common cases; custom rules tighten or open up any of them. Rules use most-specific-wins: a precise allow overrides a broad deny, ties break to deny.</p>
+    </div>
+    <div class="ptable reveal">
+      <table>
+        <thead>
+          <tr><th>Preset</th><th>Read</th><th>Write</th><th>Commands</th><th>Best for</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="pname safe">safe</span></td>
+            <td><span class="tag ok">global</span></td>
+            <td><span class="tag no">blocked</span></td>
+            <td><span class="tag no">blocked</span></td>
+            <td>CI/CD auto-review, audits</td>
+          </tr>
+          <tr>
+            <td><span class="pname default">default</span></td>
+            <td><span class="tag ok">global</span></td>
+            <td><span class="tag mid">workspace + /tmp</span></td>
+            <td><span class="tag mid">whitelisted</span></td>
+            <td>Everyday dev work, overnight refactors</td>
+          </tr>
+          <tr>
+            <td><span class="pname risk">risk</span></td>
+            <td><span class="tag ok">global</span></td>
+            <td><span class="tag ok">global</span></td>
+            <td><span class="tag ok">all allowed</span></td>
+            <td>Migrations, full-system tasks</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="ptable-note reveal">// .ssh/ · .aws/ · .gnupg/ · .env are blocked on every preset, always.</p>
+  </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install">
+  <div class="wrap">
+    <div class="install-final reveal">
+      <div class="sec-kicker" style="justify-content:center">Install</div>
+      <h2 style="font-size:clamp(27px,3.6vw,38px);font-weight:800;letter-spacing:-.025em">Up and running in thirty seconds.</h2>
+      <p style="margin-top:14px;color:var(--text-dim)">One script. It installs uv if you're missing it, then LetsCode as a global tool. Requires Python 3.11+.</p>
+
+      <div class="big-term">
+        <div class="term-bar">
+          <span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+          <span class="term-title">install — zsh</span>
+        </div>
+        <div class="term-body"><span class="p">$</span> <span class="cmd">curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh</span>
+<span class="ok">✓ uv ready  ·  ✓ letscode installed  ·  ✓ on PATH</span>
+<span class="p">$</span> <span class="cmd">letscode "add a /health endpoint to app.py"</span> <button class="copy-btn" style="float:right" data-copy="curl -fsSL https://raw.githubusercontent.com/letscan/letscode/main/scripts/install.sh | sh">copy</button></div>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="n">STEP 01</div>
+          <h4>Install</h4>
+          <p>Run the one-liner, or <code>uv tool install git+https://github.com/letscan/letscode.git</code>.</p>
+        </div>
+        <div class="step">
+          <div class="n">STEP 02</div>
+          <h4>Configure</h4>
+          <p><code>cp config.example.json config.json</code> and drop in any OpenAI-compatible API key.</p>
+        </div>
+        <div class="step">
+          <div class="n">STEP 03</div>
+          <h4>Prompt</h4>
+          <p><code>letscode "your prompt here"</code> — it loops, calls tools, and finishes the job.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="foot-inner">
+      <div class="left">
+        <span class="logo-mark" style="width:24px;height:24px;font-size:12px">&gt;_</span>
+        <span>LetsCode — the agent harness that stays out of your way.</span>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/letscan/letscode" target="_blank" rel="noopener">github</a>
+        <a href="https://github.com/letscan/letscode#readme" target="_blank" rel="noopener">docs</a>
+        <a href="https://agentclientprotocol.com" target="_blank" rel="noopener">acp</a>
+        <a href="https://agents.md" target="_blank" rel="noopener">agents.md</a>
+      </div>
+    </div>
+    <p class="foot-note">MIT License · Built for the terminal · GLM / DeepSeek / Qwen / GPT / local — bring your own model.</p>
+  </div>
+</footer>
+
+<div class="toast" id="toast">✓ copied to clipboard</div>
+
+<script>
+/* ---------- hero terminal typing ---------- */
+const script = [
+  {type:'cmd',  text:'letscode "refactor auth/ to async"'},
+  {type:'line', cls:'dim', text:'⠋ thinking…  →  Read(auth/session.py)  →  Edit(auth/session.py)', delay:500},
+  {type:'line', cls:'dim', text:'⠋ thinking…  →  Edit(auth/routes.py)   →  Bash(pytest -q)', delay:380},
+  {type:'line', cls:'ok',  text:'✓ 14 files changed  ·  212 tests passed', delay:520},
+  {type:'line', cls:'cy',  text:'  18.4k tokens (97% cached)  ·  preset: default', delay:160},
+  {type:'blank'},
+  {type:'cmd',  text:'letscode --as Review "review the diff"'},
+  {type:'line', cls:'dim', text:'[Review] reading diff… 2 findings', delay:500},
+  {type:'line', cls:'am',  text:'⚠ auth/routes.py:87 — missing await on token refresh', delay:420},
+  {type:'line', cls:'ok',  text:'✓ done  ·  3.1k tokens (99% cached)', delay:380},
+];
+
+const term = document.getElementById('termBody');
+let si = 0;
+
+function typeCmd(text, done){
+  const line = document.createElement('div');
+  const p = document.createElement('span'); p.className='p'; p.textContent='$ ';
+  const c = document.createElement('span'); c.className='cmd';
+  const caret = document.createElement('span'); caret.className='caret';
+  line.appendChild(p); line.appendChild(c); line.appendChild(caret);
+  term.appendChild(line);
+  let i = 0;
+  (function tick(){
+    if(i <= text.length){
+      c.textContent = text.slice(0, i++);
+      setTimeout(tick, 34 + Math.random()*40);
+    } else {
+      caret.remove();
+      setTimeout(done, 240);
+    }
+  })();
+}
+
+function addLine(cls, text, done){
+  const line = document.createElement('div');
+  line.className = cls || '';
+  line.textContent = text;
+  term.appendChild(line);
+  setTimeout(done, 60);
+}
+
+function runScript(){
+  if(si >= script.length){
+    // blinking caret at rest
+    const rest = document.createElement('div');
+    rest.innerHTML = '<span class="p">$ </span><span class="caret"></span>';
+    term.appendChild(rest);
+    // restart loop after a pause
+    setTimeout(()=>{ term.innerHTML=''; si=0; runScript(); }, 9000);
+    return;
+  }
+  const item = script[si++];
+  if(item.type === 'cmd'){ typeCmd(item.text, runScript); }
+  else if(item.type === 'blank'){ term.appendChild(document.createElement('div')); runScript(); }
+  else { setTimeout(()=> addLine(item.cls, item.text, runScript), item.delay || 300); }
+}
+runScript();
+
+/* ---------- copy buttons ---------- */
+const toast = document.getElementById('toast');
+document.querySelectorAll('.copy-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    navigator.clipboard.writeText(btn.dataset.copy).then(()=>{
+      toast.classList.add('show');
+      setTimeout(()=> toast.classList.remove('show'), 1600);
+    });
+  });
+});
+
+/* ---------- marquee: duplicate track for seamless loop ---------- */
+const track = document.getElementById('marqueeTrack');
+track.innerHTML += track.innerHTML;
+
+/* ---------- reveal on scroll ---------- */
+const io = new IntersectionObserver(entries=>{
+  entries.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+},{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=> io.observe(el));
+</script>
+</body>
+</html>
